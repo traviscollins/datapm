@@ -1,6 +1,5 @@
 import { Component } from '@angular/core';
 import { MyCatalogsGQL, MyCatalogsQuery, MeGQL, MeQuery } from '../generated/graphql'
-import { pluck } from 'rxjs/operators'
 
 @Component({
   selector: 'app-root',
