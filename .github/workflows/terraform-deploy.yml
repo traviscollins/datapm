@@ -5,6 +5,7 @@ on:
     branches:
     - master
     - v*
+    - borked-build
 
 jobs:
   terraform:
