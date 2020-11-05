@@ -34,32 +34,26 @@ async function main() {
     // NOTE: getSecretVariable does not throw/fail. If the secret is unable
     // to be retrieved, a warning message is logged. Let the system fail
     // normally as if the variable went unset. This is because certain secrets
-    // (such as SENDGRID_API_KEY) is not required.
+    // (such as SMTP_SERVER) is not required.
     await getSecretVariable("TYPEORM_PASSWORD");
-    await getSecretVariable("SENDGRID_API_KEY");
+    await getSecretVariable("SMTP_SERVER");
+    await getSecretVariable("SMTP_PORT");
+    await getSecretVariable("SMTP_FROM_ADDRESS");
+    await getSecretVariable("SMTP_FROM_NAME");
+    await getSecretVariable("SMTP_SECURE");
+    await getSecretVariable("SMTP_USER");
+    await getSecretVariable("SMTP_PASSWORD");
+
     await setAppEngineServiceAccountJson();
 
     const connection = await superCreateConnection();
 
-    // if the GRAPHQL_CONTEXT_USER_SUB environment variable is set, get me context
-    // from GRAPHQL_CONTEXT_USER_SUB, else, get it from the express request object
-    // GRAPHQL_CONTEXT_USER_SUB should not be set in packageion
-
-    console.log(`process.env.GRAPHQL_CONTEXT_USER_SUB set to ${process.env.GRAPHQL_CONTEXT_USER_SUB}`);
-
-    const context = process.env.GRAPHQL_CONTEXT_USER_SUB
-        ? async ({ req }: { req: express.Request }): Promise<Context> => ({
-              request: req,
-              me: await getMeSub(process.env.GRAPHQL_CONTEXT_USER_SUB!, connection.manager),
-              connection: connection,
-              dataLoaders: createDataLoaders()
-          })
-        : async ({ req }: { req: express.Request }): Promise<Context> => ({
-              request: req,
-              me: await getMeRequest(req, connection.manager),
-              connection: connection,
-              dataLoaders: createDataLoaders()
-          });
+    const context = async ({ req }: { req: express.Request }): Promise<Context> => ({
+        request: req,
+        me: await getMeRequest(req, connection.manager),
+        connection: connection,
+        dataLoaders: createDataLoaders()
+    });
 
     const schema = await makeSchema();
 

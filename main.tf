@@ -1,3 +1,13 @@
+variable "smtp_password" {
+  description = "password for the SMTP server"
+  type        = string
+}
+
+variable "APOLLO_KEY" {
+  description = "Apollo GraphlQL Key"
+  type        = string
+}
+
 terraform {
   backend "gcs" {
     bucket = "datapm-registry-test"
@@ -85,7 +95,7 @@ resource "google_cloud_run_service" "default" {
         }
         env {
           name  = "APOLLO_KEY"
-          value = "service:family-connections:asdfasdfasdfasdf"
+          value = var.APOLLO_KEY
         }
         env {
           name  = "APOLLO_GRAPH_VARIANT"
@@ -132,8 +142,8 @@ resource "google_cloud_run_service" "default" {
           value = google_sql_user.user.password
         }
         env {
-          name  = "SENDGRID_API_KEY"
-          value = "asdfasdfa"
+          name  = "REGISTRY_NAME"
+          value = "DataPM TEST Registry"
         }
         env {
           name  = "REGISTRY_HOSTNAME"
@@ -145,6 +155,38 @@ resource "google_cloud_run_service" "default" {
         }
         env {
           name  = "TYPEORM_IS_DIST"
+          value = "true"
+        }
+        env {
+          name  = "SMTP_SERVER"
+          value = "smtp.sendgrid.net"
+        }
+        env {
+          name  = "SMTP_PORT"
+          value = "465"
+        }
+        env {
+          name  = "SMTP_USER"
+          value = "apikey"
+        }
+        env {
+          name  = "SMTP_PASSWORD"
+          value = var.smtp_password
+        }
+        env {
+          name  = "SMTP_FROM_NAME"
+          value = "DataPM Test Registry"
+        }
+        env {
+          name  = "SMTP_FROM_ADDRESS"
+          value = "support@datapm.io"
+        }
+        env {
+          name  = "SMTP_SECURE"
+          value = "true"
+        }
+        env {
+          name  = "REQUIRE_EMAIL_VERIFICATION"
           value = "true"
         }
       }

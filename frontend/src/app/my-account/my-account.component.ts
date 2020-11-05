@@ -30,7 +30,6 @@ export class MyAccountComponent implements OnInit, OnDestroy {
     deleteAPIKeyState = State.INIT;
 
     currentUser: User;
-
     newAPIKey: string;
 
     public myCatalogs: Catalog[];
@@ -49,10 +48,10 @@ export class MyAccountComponent implements OnInit, OnDestroy {
     ) {
         let prefix = "/me";
         this.routes = [
-            { linkName: "details", url: prefix },
-            { linkName: "packages", url: prefix + "/packages" },
-            { linkName: "collections", url: prefix + "/collections" },
-            { linkName: "activity", url: prefix + "/activity" }
+            { linkName: "My Account", url: prefix },
+            { linkName: "My Packages", url: prefix + "/packages" },
+            { linkName: "My Collections", url: prefix + "/collections" },
+            { linkName: "My Catalogs", url: prefix + "/catalogs" }
         ];
     }
 
@@ -80,17 +79,6 @@ export class MyAccountComponent implements OnInit, OnDestroy {
 
     ngOnDestroy() {
         this.subscription.unsubscribe();
-    }
-
-    openEditDialog() {
-        const dialogConfig = new MatDialogConfig();
-        dialogConfig.data = this.currentUser;
-
-        this.dialog.open(EditAccountDialogComponent, dialogConfig);
-
-        this.dialog.afterAllClosed.subscribe((result) => {
-            this.authenticationService.refreshUserInfo();
-        });
     }
 
     public selectTab(index) {

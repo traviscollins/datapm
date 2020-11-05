@@ -1,13 +1,14 @@
 import { Component, OnInit, OnDestroy } from "@angular/core";
-import { ActivatedRoute, Router } from "@angular/router";
+import { ActivatedRoute, DefaultUrlSerializer, NavigationEnd, Router } from "@angular/router";
 import { FormControl, FormGroup } from "@angular/forms";
 import { MatDialog } from "@angular/material/dialog";
-import { takeUntil } from "rxjs/operators";
+import { filter, takeUntil } from "rxjs/operators";
 import { Subject } from "rxjs";
 
 import { AuthenticationService } from "../../services/authentication.service";
 import { LoginDialogComponent } from "./login-dialog/login-dialog.component";
 import { SignUpDialogComponent } from "./sign-up-dialog/sign-up-dialog.component";
+import { ForgotPasswordDialogComponent } from "./forgot-password-dialog/forgot-password-dialog.component";
 import { User } from "src/generated/graphql";
 
 enum State {
@@ -26,8 +27,11 @@ export class HeaderComponent implements OnInit, OnDestroy {
     state = State.INIT;
 
     currentUser: User;
+    searchTerm: String;
     searchFormGroup: FormGroup;
+    mobileSearchFormGroup: FormGroup;
     private subscription = new Subject();
+    private parameterSubject = new Subject();
 
     constructor(
         public dialog: MatDialog,
@@ -37,6 +41,15 @@ export class HeaderComponent implements OnInit, OnDestroy {
     ) {}
 
     ngOnInit(): void {
+        this.router.events
+            .pipe(takeUntil(this.parameterSubject))
+            .pipe(filter((event) => event instanceof NavigationEnd))
+            .subscribe((event: NavigationEnd) => {
+                const serializer = new DefaultUrlSerializer();
+                const parsedUrl = serializer.parse(event.url);
+                this.searchTerm = parsedUrl.root.children.primary.segments[0]?.parameterMap.get("q") || null;
+                console.log(`searchTerm ${this.searchTerm}`);
+            });
         this.authenticationService
             .getUserObservable()
             .pipe(takeUntil(this.subscription))
@@ -54,10 +67,15 @@ export class HeaderComponent implements OnInit, OnDestroy {
         this.searchFormGroup = new FormGroup({
             search: new FormControl("")
         });
+
+        this.mobileSearchFormGroup = new FormGroup({
+            mobileSearch: new FormControl("")
+        });
     }
 
     ngOnDestroy(): void {
         this.subscription.unsubscribe();
+        this.parameterSubject.unsubscribe();
     }
 
     openLoginDialog() {
@@ -67,13 +85,19 @@ export class HeaderComponent implements OnInit, OnDestroy {
     }
 
     openSignUpDialog() {
-        this.dialog.open(SignUpDialogComponent, {
+        const signupDialogRef = this.dialog.open(SignUpDialogComponent, {
             disableClose: true
+        });
+        signupDialogRef.afterClosed().subscribe((result?: string) => {
+            if (result === "forgotPassword") {
+                this.dialog.open(ForgotPasswordDialogComponent);
+            }
         });
     }
 
-    goToSearch() {
-        this.router.navigate(["/search"]);
+    mobileSearch() {
+        const query = this.searchTerm;
+        this.router.navigate(["/search", { q: query }]);
     }
 
     search() {
@@ -92,5 +116,6 @@ export class HeaderComponent implements OnInit, OnDestroy {
     logout() {
         this.authenticationService.logout();
         setTimeout(() => (this.currentUser = null), 500);
+        this.router.navigate(["/"]);
     }
 }
