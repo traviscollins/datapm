@@ -1,6 +1,7 @@
-import { Component, Input, OnDestroy, OnInit } from "@angular/core";
+import { Component, Input, OnDestroy, OnInit, ChangeDetectionStrategy, ViewEncapsulation } from "@angular/core";
 import { MatDialog } from "@angular/material/dialog";
 import { PackageFile, Schema } from "datapm-lib";
+import { createDS, columnFactory } from "@pebula/ngrid";
 
 enum State {
     LOGGED_OUT,
@@ -14,21 +15,50 @@ enum State {
 @Component({
     selector: "app-schema-samples",
     templateUrl: "./samples.component.html",
-    styleUrls: ["./samples.component.scss"]
+    styleUrls: ["./samples.component.scss"],
+    changeDetection: ChangeDetectionStrategy.OnPush,
+    encapsulation: ViewEncapsulation.None
 })
 export class SamplesComponent implements OnInit, OnDestroy {
     State = State;
 
     @Input() public schema: Schema;
 
+    columns;
+
     constructor(private dialog: MatDialog) {}
 
-    ngOnInit() {}
+    public ds;
+
+    ngOnInit() {
+        this.columns = columnFactory()
+            .default({ minWidth: 100 })
+            .table(
+                ...Object.keys(this.schema.properties).map((k) => {
+                    return {
+                        prop: k
+                    };
+                })
+            )
+            .build();
+        this.ds = this.createDatasource();
+    }
 
     ngOnDestroy() {}
 
-    schemaColumns(schema: Schema) {
-        return Object.keys(schema.properties);
+    removeDatasource(): void {
+        if (this.ds) {
+            this.ds.dispose();
+            this.ds = undefined;
+        }
+    }
+
+    createDatasource() {
+        return createDS<{
+            [key: string]: string;
+        }>()
+            .onTrigger(() => this.schemaSampleValues(this.schema))
+            .create();
     }
 
     schemaSampleValues(schema: Schema) {

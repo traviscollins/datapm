@@ -1,4 +1,4 @@
-table {
+.pbl-ngrid {
     display: inline-block;
     width: 100%;
     height: 100%;
@@ -6,25 +6,28 @@ table {
     border-radius: 4px;
 }
 
-.mat-table {
-    overflow: scroll;
+.pbl-cdk-table.cdk-table {
+    border: 1px solid #ddd;
+}
+
+.cdk-header-row {
+    border-top: 1px solid #ddd;
+    border-right: 1px solid #ddd;
     border-left: 1px solid #ddd;
 }
 
-.mat-header-cell {
-    padding: 8px 8px 8px 8px;
+.pbl-ngrid-header-cell,
+.pbl-ngrid-cell {
+    padding: 8px;
+}
+
+.pbl-ngrid-row,
+.pbl-ngrid-header-row {
+    border-bottom: 1px solid #ddd;
+    border-left: 1px solid #ddd;
     border-right: 1px solid #ddd;
+}
+
+.pbl-ngrid-header-row {
     border-top: 1px solid #ddd;
-}
-.mat-cell {
-    padding: 8px 8px 8px 8px;
-    border-right: 1px solid #ddd;
-}
-
-.mat-row:nth-child(even) {
-    background-color: white;
-}
-
-.mat-row:nth-child(odd) {
-    background-color: #eee;
 }

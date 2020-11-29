@@ -22,6 +22,9 @@ import { MatTableModule } from "@angular/material/table";
 import { PackageSamplesComponent } from "./components/package-samples/package-samples.component";
 import { SamplesComponent } from "./components/package-samples/samples.component";
 import { SamplesFullScreenDialog } from "./components/package-samples/samples-fullscreen-dialog.component";
+import { PblNgridModule } from "@pebula/ngrid";
+import { PblNgridStickyModule } from "@pebula/ngrid/sticky";
+import { PblNgridMaterialModule } from "@pebula/ngrid-material";
 
 @NgModule({
     declarations: [
@@ -47,7 +50,10 @@ import { SamplesFullScreenDialog } from "./components/package-samples/samples-fu
         MatTableModule,
         MatProgressSpinnerModule,
         SharedModule,
-        MarkdownModule.forChild()
+        MarkdownModule.forChild(),
+        PblNgridModule,
+        PblNgridStickyModule,
+        PblNgridMaterialModule
     ]
 })
 export class PackageModule {}
