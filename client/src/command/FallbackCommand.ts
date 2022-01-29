@@ -15,6 +15,7 @@ const enum Commands {
     SEARCH = "Search",
     PACKAGE = "Package",
     UPDATE = "Update",
+    UPGRADE = "Upgrade",
     LOGIN = "Login",
     LOGOUT = "Logout",
     ADD_REPOSITORY = "AddRepository",
@@ -76,7 +77,8 @@ export class FallbackCommand implements Command {
                         { title: "Log into a registry", value: Commands.LOGIN },
                         { title: "Log out of a registry", value: Commands.LOGOUT },
                         { title: "Add or Update a data repository", value: Commands.ADD_REPOSITORY },
-                        { title: "Remove a data repository", value: Commands.REMOVE_REPOSITORY }
+                        { title: "Remove a data repository", value: Commands.REMOVE_REPOSITORY },
+                        { title: "Upgrade DataPM Version", value: Commands.UPGRADE }
                     ],
                     initial: 0
                 });

@@ -14,6 +14,7 @@ import { UpdateCommand } from "./command/UpdateCommand";
 import { FallbackCommand } from "./command/FallbackCommand";
 import { RepositoryCommand } from "./command/RepositoryCommand";
 import { EditCommand } from "./command/EditCommand";
+import { UpgradeCommand } from "./command/UpgradeCommand";
 
 let argv = yargs;
 
@@ -31,6 +32,8 @@ const commands = [
     new PublishPackageCommand(),
     new UpdateCommand(),
     new EditCommand(),
+
+    new UpgradeCommand(),
 
     new CatalogsCommand(),
 
