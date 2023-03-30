@@ -36,6 +36,7 @@ export async function fetchPackage(argv: FetchArguments): Promise<void> {
     const jobResult = await job.execute();
 
     if (jobResult.exitCode !== 0) {
+        oraRef.fail(chalk.red(jobResult.errorMessage));
         exit(jobResult.exitCode);
     }
 
@@ -62,6 +63,10 @@ export async function fetchPackage(argv: FetchArguments): Promise<void> {
             command += `--sourceConnectionConfig '${JSON.stringify(jobResult.result.sourceConnectionConfiguration)}' `;
         }
 
+        if (jobResult.result.sourceCredentialsIdentifier) {
+            command += `--sourceCredentialsIdentifier '${jobResult.result.sourceCredentialsIdentifier}' `;
+        }
+
         if (jobResult.result.sourceConfiguration && Object.keys(jobResult.result.sourceConfiguration).length > 0) {
             command += `--sourceConfig '${JSON.stringify(jobResult.result.sourceConfiguration)}' `;
         }
@@ -76,6 +81,15 @@ export async function fetchPackage(argv: FetchArguments): Promise<void> {
             )}' `;
         }
 
+        if (
+            jobResult.result.sourceCredentialsIdentifier == null &&
+            Object.values(jobResult.result.packageSourceCredentialsIdentifiers).length > 0
+        ) {
+            command += `--packageSourceCredentialsIdentifiers '${JSON.stringify(
+                jobResult.result.packageSourceCredentialsIdentifiers
+            )}' `;
+        }
+
         if (Object.values(jobResult.result.packageSourceConfiguration).find((v) => Object.keys(v).length > 0) != null) {
             command += `--packageSourceConfig '${JSON.stringify(jobResult.result.packageSourceConfiguration)}' `;
         }
@@ -84,7 +98,7 @@ export async function fetchPackage(argv: FetchArguments): Promise<void> {
 
         command += `--renameSchemaProperties '${JSON.stringify(jobResult.result.renamedSchemaProperties)}' `;
 
-        command += `--sink ${jobResult.result.sink.getType()}`;
+        command += `--sinkType ${jobResult.result.sink.getType()}`;
 
         if (jobResult.result.sinkRepositoryIdentifier)
             command += " --sinkRepository " + jobResult.result.sinkRepositoryIdentifier;

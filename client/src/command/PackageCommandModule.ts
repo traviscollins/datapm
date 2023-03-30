@@ -25,6 +25,7 @@ export async function generatePackage(args: PackageCommandArguments): Promise<vo
     const jobResult = await job.execute();
 
     if (jobResult.exitCode !== 0) {
+        console.error(chalk.red(`Error: ${jobResult.errorMessage}`));
         exit(jobResult.exitCode);
     }
 
@@ -68,11 +69,15 @@ export async function generatePackage(args: PackageCommandArguments): Promise<vo
     try {
         await publishCommand.handleCommand({ reference: jobResult.result?.packageFileLocation });
     } catch (error) {
+        jobContext.print("ERROR", error.message);
+
         jobContext.print("NONE", "");
         jobContext.print("NONE", chalk.grey("You can publish the package file with the following command later"));
         jobContext.print("NONE", chalk.green(`datapm publish ${jobResult.result?.packageFileLocation}`));
         exit(1);
     }
+
+    console.log(" ");
 
     await checkDataPMVersion(oraRef);
 

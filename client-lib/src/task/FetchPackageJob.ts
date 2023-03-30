@@ -47,12 +47,13 @@ export interface FetchPackageJobResult {
     // For fetching a single source outside a package
     sourceConnectionConfiguration: DPMConfiguration;
     sourceConfiguration: DPMConfiguration;
-    sourceCredentialsIdentiifier: string | undefined;
+    sourceCredentialsIdentifier: string | undefined;
     sourceRepositoryIdentifier: string | undefined;
 
     // For fetching from a package that requires additional
     // source configuration
     packageSourceConnectionConfiguration: { [sourceSlug: string]: DPMConfiguration };
+    packageSourceCredentialsIdentifiers: { [sourceSlug: string]: string };
     packageSourceConfiguration: { [sourceSlug: string]: DPMConfiguration };
 
     excludedSchemaProperties: { [key: string]: string[] };
@@ -61,17 +62,19 @@ export interface FetchPackageJobResult {
 
 export class FetchArguments {
     reference?: string;
-    sink?: string;
+    sinkType?: string;
     defaults?: boolean;
     sinkConfig?: string;
     sinkRepository?: string;
-    credentialsIdentifier?: string;
+    sinkCredentialsIdentifier?: string;
     sinkConnectionConfig?: string;
     sinkCredentialsConfig?: string;
     quiet?: boolean;
     forceUpdate?: boolean;
 
     packageSourceConnectionConfig?: string;
+    packageSourceCredentialsIdentifiers?: string;
+    packageSourceCredentialsConfig?: string;
     packageSourceConfig?: string;
 
     sourceConnectionConfig?: string;
@@ -94,8 +97,8 @@ export class FetchPackageJob extends Job<FetchPackageJobResult> {
             throw new Error("Cannot specify both sinkRepository and sinkConnectionConfig");
         }
 
-        if (this.args.credentialsIdentifier != null && this.args.sinkCredentialsConfig != null) {
-            throw new Error("Cannot specify both credentialsIdentifier and sinkCredentialsConfig");
+        if (this.args.sinkCredentialsIdentifier != null && this.args.sinkCredentialsConfig != null) {
+            throw new Error("Cannot specify both sinkCredentialsIdentifier and sinkCredentialsConfig");
         }
 
         let excludedSchemaProperties: { [key: string]: string[] } = {};
@@ -244,6 +247,7 @@ export class FetchPackageJob extends Job<FetchPackageJobResult> {
             if (sourceConnectorDescription != null) {
                 const configureSourceResults = await configureSource(
                     this.jobContext,
+                    undefined,
                     sourceConnectorDescription,
                     sourceConnectionConfiguration,
                     sourceCredentialsConfiguration,
@@ -267,6 +271,11 @@ export class FetchPackageJob extends Job<FetchPackageJobResult> {
                         sourceConnectionConfiguration,
                         sourceCredentialsConfiguration
                     );
+
+                    if (this.args.sourceCredentialsIdentifier)
+                        this.args.packageSourceCredentialsIdentifiers = JSON.stringify({
+                            [sourceConector.getType()]: this.args.sourceCredentialsIdentifier
+                        });
                 }
 
                 this.args.sourceConnectionConfig = JSON.stringify(sourceConnectionConfiguration);
@@ -279,7 +288,7 @@ export class FetchPackageJob extends Job<FetchPackageJobResult> {
                     hasPermissionToSave: false,
                     licenseFileUrl: "",
                     readmeFileUrl: "",
-                    packageFileUrl: "",
+                    packageReference: "",
                     permitsSaving: false,
                     save: () => {
                         throw new Error("Save not available");
@@ -408,6 +417,16 @@ export class FetchPackageJob extends Job<FetchPackageJobResult> {
             this.args.packageSourceConnectionConfig ?? "{}"
         );
 
+        // Map of source slugs to credential identifier strings
+        const packageSourceCredentialIdentifiers: { [sourceSlug: string]: string } = JSON.parse(
+            this.args.packageSourceCredentialsIdentifiers ?? "{}"
+        );
+
+        // Map of source slugs to credential configuration objects
+        const packageSourceCredentialConfigs: { [sourceSlug: string]: DPMConfiguration } = JSON.parse(
+            this.args.packageSourceCredentialsConfig ?? "{}"
+        );
+
         for (const source of packageFile.sources) {
             this.jobContext.setCurrentStep("Inspecting " + source.slug);
 
@@ -419,10 +438,32 @@ export class FetchPackageJob extends Job<FetchPackageJobResult> {
                 };
             }
 
-            const inspectionResult = await inspectSourceConnection(this.jobContext, source, this.args.defaults);
+            if (packageSourceCredentialIdentifiers[source.slug] != null) {
+                source.credentialsIdentifier = packageSourceCredentialIdentifiers[source.slug];
+            }
+
+            const sourceCredentials: undefined | DPMConfiguration = packageSourceCredentialConfigs[source.slug];
+
+            const inspectionResult = await inspectSourceConnection(
+                this.jobContext,
+                packageFileWithContext.catalogSlug
+                    ? {
+                          catalogSlug: packageFileWithContext.catalogSlug,
+                          packageSlug: packageFile.packageSlug
+                      }
+                    : undefined,
+                source,
+                sourceCredentials,
+                this.args.defaults,
+                packageSourceCredentialIdentifiers[source.slug] != null
+            );
 
             if (Object.keys(inspectionResult.additionalConnectionConfiguration).length > 0) {
                 packageSourceConnectionConfig[source.slug] = inspectionResult.additionalConnectionConfiguration;
+            }
+
+            if (inspectionResult.credentialsIdentifier) {
+                packageSourceCredentialIdentifiers[source.slug] = inspectionResult.credentialsIdentifier;
             }
 
             if (Object.keys(inspectionResult.additionalConfiguration).length > 0) {
@@ -440,8 +481,8 @@ export class FetchPackageJob extends Job<FetchPackageJobResult> {
         // Getting sink
         let sinkType: string;
 
-        if (this.args.sink) {
-            sinkType = this.args.sink;
+        if (this.args.sinkType) {
+            sinkType = this.args.sinkType;
         } else if (this.args.defaults) {
             sinkType = "file";
         } else {
@@ -511,6 +552,12 @@ export class FetchPackageJob extends Job<FetchPackageJobResult> {
 
         const obtainSinkConfigurationResult = await obtainConnectionConfiguration(
             this.jobContext,
+            packageFileWithContext.catalogSlug
+                ? {
+                      catalogSlug: packageFileWithContext.catalogSlug,
+                      packageSlug: packageFile.packageSlug
+                  }
+                : undefined,
             sinkConnector,
             sinkConnectionConfiguration,
             this.args.sinkRepository,
@@ -528,11 +575,17 @@ export class FetchPackageJob extends Job<FetchPackageJobResult> {
 
         const obtainCredentialsConfigurationResult = await obtainCredentialsConfiguration(
             this.jobContext,
+            packageFileWithContext.catalogSlug
+                ? {
+                      catalogSlug: packageFileWithContext.catalogSlug,
+                      packageSlug: packageFileWithContext.packageFile.packageSlug
+                  }
+                : undefined,
             sinkConnector,
             sinkConnectionConfiguration,
             sinkCredentialsConfiguration,
             false,
-            this.args.credentialsIdentifier,
+            this.args.sinkCredentialsIdentifier,
             this.args.defaults
         );
 
@@ -554,7 +607,7 @@ export class FetchPackageJob extends Job<FetchPackageJobResult> {
             };
         }
 
-        if (this.args.sink || this.args.defaults) {
+        if (this.args.sinkType || this.args.defaults) {
             this.jobContext.print("SUCCESS", `Found the ${sinkDescription.getDisplayName()} sink`);
         }
 
@@ -630,6 +683,13 @@ export class FetchPackageJob extends Job<FetchPackageJobResult> {
             this.jobContext.print("ERROR", `Recieved ${interupted}, stopping early.`);
         }
 
+        const sinkCredentialsIdentifier = sinkConnector.requiresCredentialsConfiguration()
+            ? await sinkConnector.getCredentialsIdentifierFromConfiguration(
+                  sinkConnectionConfiguration,
+                  sinkCredentialsConfiguration
+              )
+            : undefined;
+
         return {
             exitCode: 0,
             result: {
@@ -641,18 +701,19 @@ export class FetchPackageJob extends Job<FetchPackageJobResult> {
                 sinkRepositoryIdentifier: sinkConnector.userSelectableConnectionHistory()
                     ? obtainSinkConfigurationResult.repositoryIdentifier
                     : undefined,
-                sinkCredentialsIdentifier: obtainCredentialsConfigurationResult.credentialsIdentifier,
+                sinkCredentialsIdentifier,
                 sourceConnectionConfiguration: this.args.sourceConnectionConfig
                     ? JSON.parse(this.args.sourceConnectionConfig)
                     : undefined,
-                sourceCredentialsIdentiifier: this.args.sourceCredentialsConfig,
+                sourceCredentialsIdentifier: this.args.sourceCredentialsIdentifier,
                 sourceConfiguration: this.args.sourceConfig ? JSON.parse(this.args.sourceConfig) : undefined,
                 sourceRepositoryIdentifier: this.args.sourceRepositoryIdentifier,
                 excludedSchemaProperties,
                 renamedSchemaProperties,
 
-                packageSourceConfiguration: packageSourceConfig,
-                packageSourceConnectionConfiguration: packageSourceConnectionConfig
+                packageSourceConnectionConfiguration: packageSourceConnectionConfig,
+                packageSourceCredentialsIdentifiers: packageSourceCredentialIdentifiers,
+                packageSourceConfiguration: packageSourceConfig
             }
         };
     }

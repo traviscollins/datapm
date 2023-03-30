@@ -22,8 +22,12 @@ import {
     writeCSVFile,
     TestResults,
     PromptInput,
-    KEYS
+    KEYS,
+    loadTestPackageFile,
+    writeTestPackageFile
 } from "./test-utils";
+import { getLocalPackageLatestVersionPath } from "../../src/util/GetPackageUtil";
+import path from "path";
 
 // Prompts
 const publishCommandPrompts = ["Target registry?", "Catalog short name?", "Data Access Method?", "Is the above ok?"];
@@ -125,7 +129,8 @@ const updateSourceFile = (filePath: string) => {
 
 describe("Update Package Command Tests", async () => {
     const sourceAFilePath = "file://./test.csv";
-    let packageAFilePath = "";
+    let packageAReference = "";
+    let packageAPath2 = "";
     let userAApiKey: string;
     let userBApiKey: string;
     let userAClient: ApolloClient<NormalizedCacheObject>;
@@ -162,7 +167,7 @@ describe("Update Package Command Tests", async () => {
         expect(userBApiKey != null).equal(true);
 
         generateSourceFile("test.csv");
-        await createTestPackage(sourceAFilePath, true);
+        packageAReference = await createTestPackage(sourceAFilePath, true);
     });
 
     after(() => {
@@ -180,7 +185,7 @@ describe("Update Package Command Tests", async () => {
 
         const cmdResult = await testCmd(
             "update",
-            ["test.datapm.json", "--forceUpdate"],
+            [packageAReference, "--forceUpdate"],
             prompts,
             async (line: string) => {
                 if (line.includes("When you are ready, you can publish with the following command")) {
@@ -189,7 +194,7 @@ describe("Update Package Command Tests", async () => {
             }
         );
 
-        const newPackageFile: PackageFile = loadPackageFileFromDisk("test.datapm.json");
+        const newPackageFile: PackageFile = loadTestPackageFile(packageAReference);
 
         expect(cmdResult.code, "Exit code").equals(0);
         expect(results.messageFound, "Found success message").equals(true);
@@ -206,6 +211,29 @@ describe("Update Package Command Tests", async () => {
         expect(properties["Increasing series integer"].unit).equals(undefined);
     });
 
+    it("Should manually update package file descriptors for testing", async () => {
+        const packageFile = loadTestPackageFile(packageAReference);
+        packageFile.description = "Updated description";
+        packageFile.displayName = "Updated display name";
+
+        packageFile.schemas[0].derivedFrom = [
+            {
+                displayName: "test",
+                schemaIdentifier: {
+                    packageSlug: "test",
+                    catalogSlug: "default",
+                    majorVersion: 1,
+                    registryUrl: `http://localhost:${registryServerPort}`,
+                    schemaTitle: "test"
+                }
+            }
+        ];
+        packageFile.schemas[0].derivedFromDescription = "Updated derived from description";
+        packageFile.schemas[0].unit = "monkeys";
+
+        writeTestPackageFile(packageFile, packageAReference);
+    });
+
     it("Should update the package file based on the updated source file", async () => {
         updateSourceFile("test.csv");
 
@@ -217,7 +245,7 @@ describe("Update Package Command Tests", async () => {
 
         const cmdResult = await testCmd(
             "update",
-            ["test.datapm.json", "--forceUpdate"],
+            [packageAReference, "--forceUpdate"],
             prompts,
             async (line: string) => {
                 if (line.includes("When you are ready, you can publish with the following command")) {
@@ -226,25 +254,30 @@ describe("Update Package Command Tests", async () => {
             }
         );
 
-        const newPackageFile: PackageFile = loadPackageFileFromDisk("test.datapm.json");
+        const newPackageFile: PackageFile = loadTestPackageFile(packageAReference);
 
         expect(cmdResult.code, "Exit code").equals(0);
         expect(results.messageFound, "Found success message").equals(true);
-        expect(newPackageFile.displayName).be.string("test");
+        expect(newPackageFile.displayName).be.string("Updated display name");
+        expect(newPackageFile.description).equals("Updated description");
+        expect(newPackageFile.schemas[0].derivedFrom).not.equals(null);
+        expect(newPackageFile.schemas[0].derivedFromDescription).equals("Updated derived from description");
+        expect(newPackageFile.schemas[0].unit).equals("monkeys");
         expect(newPackageFile.packageSlug).be.string("test");
         expect(newPackageFile.version).be.string("2.0.0");
-        expect(newPackageFile.description).be.string("Generated from file://./test.csv");
         expect(newPackageFile.website).be.string("");
         expect(newPackageFile.schemas[0].sampleRecords?.length).equals(100);
         expect(newPackageFile.schemas[0].recordCount).equals(200);
-        expect(newPackageFile.schemas[0].unit).equals(undefined);
+        expect(newPackageFile.schemas[0].unit).equals("monkeys");
     });
 
     it("Should prompt for and save missing configuration parameters", async () => {
-        const packageFile: PackageFile = loadPackageFileFromDisk("test.datapm.json");
+        const packageFile: PackageFile = loadTestPackageFile(packageAReference);
         delete packageFile.sources[0].configuration?.headerRowNumber;
 
-        fs.writeFileSync("test.datapm.json", JSON.stringify(packageFile, null, 2));
+        packageAPath2 = getLocalPackageLatestVersionPath(packageAReference.split("/")[1]);
+
+        fs.writeFileSync(packageAPath2, JSON.stringify(packageFile, null, 2));
 
         const prompts: PromptInput[] = [
             {
@@ -257,18 +290,13 @@ describe("Update Package Command Tests", async () => {
             messageFound: false
         };
 
-        const cmdResult = await testCmd(
-            "update",
-            ["test.datapm.json", "--forceUpdate"],
-            prompts,
-            async (line: string) => {
-                if (line.includes("When you are ready, you can publish with the following command")) {
-                    results.messageFound = true;
-                }
+        const cmdResult = await testCmd("update", [packageAPath2, "--forceUpdate"], prompts, async (line: string) => {
+            if (line.includes("When you are ready, you can publish with the following command")) {
+                results.messageFound = true;
             }
-        );
+        });
 
-        const newPackageFile: PackageFile = loadPackageFileFromDisk("test.datapm.json");
+        const newPackageFile: PackageFile = loadPackageFileFromDisk(packageAPath2);
 
         expect(cmdResult.code, "Exit code").equals(0);
 
@@ -276,10 +304,12 @@ describe("Update Package Command Tests", async () => {
     });
 
     it("Should preserve README and LICENSE files", async () => {
-        const packageFile: PackageFile = loadPackageFileFromDisk("test.datapm.json");
+        const packageJSON = JSON.parse(fs.readFileSync(packageAPath2, "utf8"));
 
-        fs.writeFileSync(packageFile.readmeFile as string, "README SAVED");
-        fs.writeFileSync(packageFile.licenseFile as string, "LICENSE SAVED");
+        const packageDirectory = path.dirname(packageAPath2);
+
+        fs.writeFileSync(path.join(packageDirectory, packageJSON.readmeFile as string), "README SAVED");
+        fs.writeFileSync(path.join(packageDirectory, packageJSON.licenseFile as string), "LICENSE SAVED");
 
         const prompts: PromptInput[] = [
             {
@@ -294,7 +324,7 @@ describe("Update Package Command Tests", async () => {
 
         const cmdResult = await testCmd(
             "update",
-            ["test.datapm.json", "--forceUpdate"],
+            [packageAReference, "--forceUpdate"],
             prompts,
             async (line: string) => {
                 if (line.includes("When you are ready, you can publish with the following command")) {
@@ -305,17 +335,21 @@ describe("Update Package Command Tests", async () => {
 
         expect(cmdResult.code, "Exit code").equals(0);
 
-        const rawPackageFile = JSON.parse(fs.readFileSync("test.datapm.json", "utf8"));
+        const rawPackageFile = JSON.parse(fs.readFileSync(packageAPath2, "utf8"));
 
         expect(rawPackageFile.readmeMarkdown).to.equal(undefined);
         expect(rawPackageFile.licenseMarkdown).to.equal(undefined);
 
-        const newPackageFile: PackageFile = loadPackageFileFromDisk("test.datapm.json");
-
-        const readmeContents = fs.readFileSync(newPackageFile.readmeFile as string, "utf-8");
+        const readmeContents = fs.readFileSync(
+            path.join(packageDirectory, rawPackageFile.readmeFile as string),
+            "utf-8"
+        );
         expect(readmeContents).equals("README SAVED");
 
-        const licenseContents = fs.readFileSync(newPackageFile.licenseFile as string, "utf-8");
+        const licenseContents = fs.readFileSync(
+            path.join(packageDirectory, rawPackageFile.licenseFile as string),
+            "utf-8"
+        );
         expect(licenseContents).equals("LICENSE SAVED");
     });
 
@@ -326,11 +360,11 @@ describe("Update Package Command Tests", async () => {
             messageFound: false
         };
 
-        const cmdResult = await testCmd("publish", ["test.datapm.json"], prompts, async (line: string) => {
+        const cmdResult = await testCmd("publish", [packageAReference], prompts, async (line: string) => {
             if (line.includes("datapm fetch ")) {
                 const matches = line.match(/datapm\sfetch\s(.*)/);
                 if (matches == null) throw new Error("no match found");
-                packageAFilePath = matches[1];
+                packageAReference = matches[1];
                 results.messageFound = true;
             }
         });
@@ -350,7 +384,7 @@ describe("Update Package Command Tests", async () => {
                     {
                         usernameOrEmailAddress: "testB-update-command",
                         permission: [Permission.VIEW],
-                        packagePermission: [Permission.VIEW]
+                        packagePermissions: [Permission.VIEW]
                     }
                 ],
                 message: "test message"
@@ -444,7 +478,7 @@ describe("Update Package Command Tests", async () => {
             messageFound: false
         };
 
-        const cmdResult = await testCmd("update", [packageAFilePath, "--defaults"], [], async (line: string) => {
+        const cmdResult = await testCmd("update", [packageAReference, "--defaults"], [], async (line: string) => {
             if (line.includes("You are not logged in to the registry.")) {
                 results.messageFound = true;
             }

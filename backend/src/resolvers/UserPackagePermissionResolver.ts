@@ -1,74 +1,24 @@
 import { ValidationError } from "apollo-server";
 import { emailAddressValid } from "datapm-lib";
-import { Connection } from "typeorm";
-import { AuthenticatedContext, Context } from "../context";
-import { PackageEntity } from "../entity/PackageEntity";
+import { AuthenticatedContext } from "../context";
 import { UserEntity } from "../entity/UserEntity";
-import { PackageIdentifierInput, Permission, SetPackagePermissionInput, UserStatus } from "../generated/graphql";
+import {
+    ActivityLogEventType,
+    PackageIdentifierInput,
+    SetPackagePermissionInput,
+    UserStatus
+} from "../generated/graphql";
+import { createActivityLog } from "../repository/ActivityLogRepository";
 import { PackagePermissionRepository } from "../repository/PackagePermissionRepository";
 import { PackageRepository } from "../repository/PackageRepository";
 import { UserRepository } from "../repository/UserRepository";
 import { asyncForEach } from "../util/AsyncUtils";
-import { isAuthenticatedContext } from "../util/contextHelpers";
 import { sendInviteUser, sendShareNotification, validateMessageContents } from "../util/smtpUtil";
 import { deletePackageFollowByUserId, deletePackageIssuesFollowsByUserId } from "./FollowResolver";
-import { getPackageFromCacheOrDbOrFail, getPackageFromCacheOrDbByIdOrFail } from "./PackageResolver";
-
-export const hasPackagePermissions = async (context: Context, packageId: number, permission: Permission) => {
-    const packagePromiseFunction = () =>
-        context.connection.getRepository(PackageEntity).findOneOrFail({ id: packageId });
-    const packageEntity = await context.cache.loadPackage(packageId, packagePromiseFunction);
-
-    if (permission == Permission.VIEW) {
-        const packageEntity = await getPackageFromCacheOrDbByIdOrFail(context, context.connection, packageId);
-        if (packageEntity?.isPublic) {
-            return true;
-        }
-    }
-
-    if (!isAuthenticatedContext(context)) {
-        return false;
-    }
-
-    const userId = (context as AuthenticatedContext).me.id;
-    const permissionPromiseFunction = () =>
-        context.connection
-            .getCustomRepository(PackagePermissionRepository)
-            .hasPermission(userId, packageEntity, permission);
-
-    return await context.cache.loadPackagePermissionsStatusById(packageId, permission, permissionPromiseFunction);
-};
-
-export const hasPackageEntityPermissions = async (
-    context: Context,
-    packageEntity: PackageEntity,
-    permission: Permission
-):Promise<Boolean> => {
-    if (permission == Permission.VIEW) {
-        if (packageEntity?.isPublic) {
-            return true;
-        }
-    }
-
-    if (!isAuthenticatedContext(context)) {
-        return false;
-    }
-
-    const userId = (context as AuthenticatedContext).me.id;
-    const permissionPromiseFunction = () =>
-        context.connection
-            .getCustomRepository(PackagePermissionRepository)
-            .hasPermission(userId, packageEntity, permission);
-
-    return await context.cache.loadPackagePermissionsStatusById(
-        packageEntity.id,
-        permission,
-        permissionPromiseFunction
-    );
-};
+import { getPackageFromCacheOrDbOrFail } from "./PackageResolver";
 
 export const setPackagePermissions = async (
-    _0: any,
+    _0: unknown,
     {
         identifier,
         value,
@@ -78,9 +28,8 @@ export const setPackagePermissions = async (
         value: SetPackagePermissionInput[];
         message: string;
     },
-    context: AuthenticatedContext,
-    info: any
-) => {
+    context: AuthenticatedContext
+): Promise<void> => {
     validateMessageContents(message);
 
     const packageEntity = await context.connection
@@ -111,10 +60,20 @@ export const setPackagePermissions = async (
                     await deletePackageIssuesFollowsByUserId(transaction, packageEntity.id, user.id);
                 }
 
-                return await packagePermissionRepository.removePackagePermissionForUser({
+                await packagePermissionRepository.removePackagePermissionForUser({
                     identifier,
                     user
                 });
+
+                await createActivityLog(transaction, {
+                    userId: context.me.id,
+                    eventType: ActivityLogEventType.PACKAGE_USER_PERMISSION_REMOVED,
+                    targetPackageId: packageEntity.id,
+                    targetUserId: user.id,
+                    permissions: userPackagePermission.permissions
+                });
+
+                return;
             }
 
             if (user == null) {
@@ -129,7 +88,7 @@ export const setPackagePermissions = async (
                     throw new ValidationError("USER_NOT_FOUND - " + userPackagePermission.usernameOrEmailAddress);
                 }
             } else {
-                if (user.status == UserStatus.PENDING_SIGN_UP) {
+                if (user.status === UserStatus.PENDING_SIGN_UP) {
                     inviteUsers.push(user);
                 } else {
                     existingUsers.push(user);
@@ -140,6 +99,13 @@ export const setPackagePermissions = async (
                 identifier,
                 userId: user.id,
                 permissions: userPackagePermission.permissions
+            });
+
+            await createActivityLog(transaction, {
+                userId: context.me.id,
+                eventType: ActivityLogEventType.PACKAGE_USER_PERMISSION_ADDED_UPDATED,
+                targetPackageId: packageEntity.id,
+                targetUserId: user.id
             });
         });
     });
@@ -160,10 +126,10 @@ export const setPackagePermissions = async (
 };
 
 export const removePackagePermissions = async (
-    _0: any,
+    _0: unknown,
     { identifier, usernameOrEmailAddress }: { identifier: PackageIdentifierInput; usernameOrEmailAddress: string },
     context: AuthenticatedContext
-) => {
+): Promise<void> => {
     return context.connection.transaction(async (transaction) => {
         const user = await transaction
             .getCustomRepository(UserRepository)
@@ -173,14 +139,25 @@ export const removePackagePermissions = async (
         }
 
         const packageEntity = await getPackageFromCacheOrDbOrFail(context, identifier);
+
+        if (packageEntity == null)
+            throw new Error("PACKAGE_NOT_FOUND - " + identifier.catalogSlug + "/" + identifier.packageSlug);
+
         if (!packageEntity.isPublic) {
             await deletePackageFollowByUserId(transaction, packageEntity.id, user.id);
             await deletePackageIssuesFollowsByUserId(transaction, packageEntity.id, user.id);
         }
 
-        return transaction.getCustomRepository(PackagePermissionRepository).removePackagePermissionForUser({
+        await transaction.getCustomRepository(PackagePermissionRepository).removePackagePermissionForUser({
             identifier,
             user
+        });
+
+        await createActivityLog(transaction, {
+            userId: context.me.id,
+            eventType: ActivityLogEventType.PACKAGE_USER_PERMISSION_REMOVED,
+            targetPackageId: packageEntity.id,
+            targetUserId: user.id
         });
     });
 };

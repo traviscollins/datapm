@@ -3,11 +3,12 @@ import { Argv } from "yargs";
 
 export class FetchArguments {
     reference?: string;
-    sink?: string;
+    sinkType?: string;
     defaults?: boolean;
     sinkConfig?: string;
     sinkConnectionConfig?: string;
     sinkCredentialsConfig?: string;
+    sourceCredentialsIdentifier?: string;
     quiet?: boolean;
     forceUpdate?: boolean;
     sinkRepository?: string;
@@ -42,16 +43,25 @@ export class FetchCommand implements Command {
                     .option("sourceCredentialsConfig", {
                         type: "string"
                     })
+                    .option("sourceCredentialsIdentifier", {
+                        type: "string"
+                    })
                     .option("sourceConfig", {
                         type: "string"
                     })
                     .option("packageSourceConnectionConfig", {
                         type: "string"
                     })
+                    .option("packageSourceCredentialsConfig", {
+                        type: "string"
+                    })
+                    .option("packageSourceCredentialsIdentifiers", {
+                        type: "string"
+                    })
                     .option("packageSourceConfig", {
                         type: "string"
                     })
-                    .option("sink", {
+                    .option("sinkType", {
                         type: "string", // TODO make each sink and source a module with a light-weight description
                         describe: "destination"
                     })
@@ -89,7 +99,7 @@ export async function fetchPackage(args: FetchArguments): Promise<void> {
         await fetchCommand.fetchPackage({
             ...args,
             sinkRepository: args.sinkRepository,
-            credentialsIdentifier: args.sinkAccount
+            sinkCredentialsIdentifier: args.sinkAccount
         });
     } catch (e) {
         console.error(e);

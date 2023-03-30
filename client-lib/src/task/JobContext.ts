@@ -1,7 +1,11 @@
 import { Parameter, ParameterAnswer, DPMConfiguration, PackageFile, TaskStatus } from "datapm-lib";
+import path from "path";
 import { RepositoryConfig, RegistryConfig } from "../config/Config";
 import { PackageFileWithContext, PackageIdentifier } from "../main";
 import { MessageType, Task } from "./Task";
+import os from "os";
+import { SemVer } from "semver";
+import { PackageIdentifierInput } from "../generated/graphql";
 
 /** A JobContext is given to a Job. The context is an implementation specific to
  * where the task is executing (server, command line client, etc). The context implementation
@@ -14,23 +18,48 @@ export abstract class JobContext {
     answerListeners: ((answer: ParameterAnswer<string>) => void)[] = [];
 
     /** Should return all of the repository configs for a given repository type */
-    abstract getRepositoryConfigsByType(type: string): RepositoryConfig[];
+    abstract getRepositoryConfigsByType(
+        relatedPackage: PackageIdentifierInput | undefined,
+        type: string
+    ): Promise<RepositoryConfig[]>;
 
-    abstract getRepositoryConfig(type: string, identifier: string): RepositoryConfig | undefined;
+    abstract getRepositoryConfig(
+        relatedPackage: PackageIdentifierInput | undefined,
+        type: string,
+        identifier: string
+    ): Promise<RepositoryConfig | undefined>;
 
     /** Should save a repository credential */
     abstract saveRepositoryCredential(
+        relatedPackage: PackageIdentifierInput | undefined,
         connectorType: string,
         repositoryIdentifier: string,
         credentialsIdentifier: string,
         credentials: DPMConfiguration
     ): Promise<void>;
 
-    abstract saveRepositoryConfig(type: string, repositoryConfig: RepositoryConfig): void;
+    abstract saveRepositoryConfig(
+        relatedPackage: PackageIdentifierInput | undefined,
+        connectorType: string,
+        repositoryConfig: RepositoryConfig
+    ): Promise<void>;
 
-    abstract removeRepositoryConfig(type: string, repositoryIdentifer: string): void;
+    abstract removeRepositoryConfig(
+        relatedPackage: PackageIdentifierInput | undefined,
+        connectorType: string,
+        repositoryIdentifer: string
+    ): Promise<void>;
 
+    /**
+     *
+     * @param relatedPackage Used in backend jobcontexts to restrict access on a per package basis
+     * @param connectorType
+     * @param repositoryIdentifier
+     * @param credentialsIdentifier
+     * @returns
+     */
     abstract getRepositoryCredential(
+        relatedPackage: PackageIdentifierInput | undefined,
         connectorType: string,
         repositoryIdentifier: string,
         credentialsIdentifier: string
@@ -113,21 +142,30 @@ export class SilentJobContext extends JobContext {
         super();
     }
 
-    getRepositoryConfigsByType(type: string): RepositoryConfig[] {
-        return this.context.getRepositoryConfigsByType(type);
+    async getRepositoryConfigsByType(
+        relatedPackage: PackageIdentifierInput | undefined,
+        type: string
+    ): Promise<RepositoryConfig[]> {
+        return this.context.getRepositoryConfigsByType(relatedPackage, type);
     }
 
-    getRepositoryConfig(type: string, identifier: string): RepositoryConfig | undefined {
-        return this.context.getRepositoryConfig(type, identifier);
+    getRepositoryConfig(
+        relatedPackage: PackageIdentifierInput | undefined,
+        type: string,
+        identifier: string
+    ): Promise<RepositoryConfig | undefined> {
+        return this.context.getRepositoryConfig(relatedPackage, type, identifier);
     }
 
     saveRepositoryCredential(
+        relatedPackage: PackageIdentifierInput,
         connectorType: string,
         repositoryIdentifier: string,
         credentialsIdentifier: string,
         credentials: DPMConfiguration
     ): Promise<void> {
         return this.context.saveRepositoryCredential(
+            relatedPackage,
             connectorType,
             repositoryIdentifier,
             credentialsIdentifier,
@@ -135,20 +173,34 @@ export class SilentJobContext extends JobContext {
         );
     }
 
-    saveRepositoryConfig(type: string, repositoryConfig: RepositoryConfig): void {
-        return this.context.saveRepositoryConfig(type, repositoryConfig);
+    saveRepositoryConfig(
+        relatedPackage: PackageIdentifierInput | undefined,
+        type: string,
+        repositoryConfig: RepositoryConfig
+    ): Promise<void> {
+        return this.context.saveRepositoryConfig(relatedPackage, type, repositoryConfig);
     }
 
-    removeRepositoryConfig(type: string, repositoryIdentifer: string): void {
-        return this.context.removeRepositoryConfig(type, repositoryIdentifer);
+    removeRepositoryConfig(
+        relatedPackage: PackageIdentifierInput | undefined,
+        type: string,
+        repositoryIdentifer: string
+    ): Promise<void> {
+        return this.context.removeRepositoryConfig(relatedPackage, type, repositoryIdentifer);
     }
 
     getRepositoryCredential(
+        relatedPackage: PackageIdentifier,
         connectorType: string,
         repositoryIdentifier: string,
         credentialsIdentifier: string
     ): Promise<DPMConfiguration | undefined> {
-        return this.context.getRepositoryCredential(connectorType, repositoryIdentifier, credentialsIdentifier);
+        return this.context.getRepositoryCredential(
+            relatedPackage,
+            connectorType,
+            repositoryIdentifier,
+            credentialsIdentifier
+        );
     }
 
     getRegistryConfigs(): RegistryConfig[] {
@@ -192,6 +244,9 @@ export class SilentJobContext extends JobContext {
             },
             setMessage: () => {
                 // do nothing
+            },
+            getLastMessage: () => {
+                return undefined;
             }
         });
     }
@@ -201,7 +256,20 @@ export class SilentJobContext extends JobContext {
     }
 
     saveNewPackageFile(catalogSlug: string | undefined, packagefile: PackageFile): Promise<PackageFileWithContext> {
-        return this.context.saveNewPackageFile(catalogSlug, packagefile);
+        if (catalogSlug == null) catalogSlug = "local";
+
+        const majorVersion = new SemVer(packagefile.version).major.toString();
+
+        const filePath = path.join(
+            os.homedir(),
+            "data",
+            catalogSlug,
+            packagefile.packageSlug,
+            majorVersion,
+            packagefile.packageSlug + ".datapm.json"
+        );
+
+        return this.context.saveNewPackageFile(filePath, packagefile);
     }
 
     getPackageFile(

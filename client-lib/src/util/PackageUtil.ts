@@ -1,15 +1,7 @@
-import {
-    Difference,
-    DifferenceType,
-    DPMConfiguration,
-    PackageFile,
-    PublishMethod,
-    RegistryReference,
-    Source
-} from "datapm-lib";
+import { Difference, DifferenceType, PackageFile, PublishMethod, RegistryReference, Source } from "datapm-lib";
 import { SemVer } from "semver";
-import { CreateVersionInput } from "../generated/graphql";
-import { obtainCredentials } from "./CredentialsUtil";
+import { CreateCredentialDocument, CreateVersionInput } from "../generated/graphql";
+import { CredentialAndIdentifier, obtainCredentialsImmutable } from "./CredentialsUtil";
 import { identifierToString } from "./IdentifierUtil";
 import { getRegistryClientWithConfig } from "./RegistryClient";
 import { exit } from "yargs";
@@ -18,11 +10,11 @@ import numeral from "numeral";
 import { Task } from "../task/Task";
 import { JobContext } from "../task/JobContext";
 import { fetchMultiple } from "../task/FetchPackageJob";
-import internal from "stream";
-import { InspectionResults } from "../main";
+import { PackageFileWithContext, InspectionResults } from "../main";
 import { inspectSourceConnection } from "./SchemaUtil";
+import { getConnectorDescriptionByType } from "../connector/ConnectorUtil";
 
-type CredentialsBySourceSlug = Map<string, DPMConfiguration>;
+type CredentialsBySourceSlug = Map<string, CredentialAndIdentifier>;
 
 export const DifferenceTypeMessages: Record<DifferenceType, string> = {
     [DifferenceType.REMOVE_SCHEMA]: "Removed Schema",
@@ -40,7 +32,7 @@ export const DifferenceTypeMessages: Record<DifferenceType, string> = {
     [DifferenceType.CHANGE_SOURCE_URIS]: "Changed Source URIs",
     [DifferenceType.REMOVE_HIDDEN_PROPERTY]: "Removed Hidden Property",
     [DifferenceType.CHANGE_CONTACT_EMAIL]: "Change Contact Email",
-    [DifferenceType.REMOVE_STREAM_SET]: "Remove Stream Set",
+    [DifferenceType.REMOVE_STREAM_SET]: "Removed Stream Set",
     [DifferenceType.REMOVE_SOURCE]: "Removed Source",
     [DifferenceType.REMOVE_HIDDEN_SCHEMA]: "Removed Hidden Schema",
     [DifferenceType.CHANGE_PROPERTY_TYPE]: "Changed Property Type",
@@ -101,16 +93,28 @@ export interface PublishProgress {
 /** Returns boolean of whether the package file was changed during the saving process */
 export async function publishPackageFile(
     jobContext: JobContext,
-    packageFile: PackageFile,
+    packageFileWithContext: PackageFileWithContext,
     targetRegistries: RegistryReference[]
 ): Promise<boolean> {
-    const credentialsBySourceSlug: CredentialsBySourceSlug = new Map();
+    const credentialsBySourceSlug: CredentialsBySourceSlug = new Map<string, CredentialAndIdentifier>();
 
     let packageFileChanged = false;
 
+    const packageFile = packageFileWithContext.packageFile;
+
     for (const source of packageFile.sources) {
-        const credentials = await obtainCredentials(jobContext, source);
-        credentialsBySourceSlug.set(source.slug, credentials);
+        const credentials = await obtainCredentialsImmutable(
+            jobContext,
+            packageFileWithContext.catalogSlug
+                ? {
+                      catalogSlug: packageFileWithContext.catalogSlug,
+                      packageSlug: packageFile.packageSlug
+                  }
+                : undefined,
+            source
+        );
+
+        if (credentials) credentialsBySourceSlug.set(source.slug, credentials);
     }
 
     await attemptPublishPackageFile(jobContext, packageFile, targetRegistries, credentialsBySourceSlug)
@@ -230,7 +234,17 @@ async function publishData(
 
     for (const source of packageFile.sources) {
         jobContext.setCurrentStep("Inspecting " + source.slug);
-        const inspectionResult = await inspectSourceConnection(jobContext, source, false);
+        const inspectionResult = await inspectSourceConnection(
+            jobContext,
+            {
+                catalogSlug: targetRegistry.catalogSlug,
+                packageSlug: packageFile.packageSlug
+            },
+            source,
+            undefined,
+            false,
+            true
+        );
 
         sourcesAndInspectionResults.push({
             source,
@@ -406,6 +420,56 @@ export async function uploadPackageFile(
         }
 
         returnValue.set(registryRef, true);
+
+        // TODO Should this be moved out to a new "uploadPackageCredentials" method?
+        for (const source of packageFile.sources) {
+            const sourceCredentials = credentialsBySourceSlug.get(source.slug);
+
+            if (sourceCredentials == null) {
+                continue;
+            }
+
+            const connectorDescription = getConnectorDescriptionByType(source.type);
+
+            if (connectorDescription == null) throw new Error("Could not find connector " + source.type);
+
+            const sourceConnector = await connectorDescription.getConnector();
+
+            const repositoryIdentifier = await sourceConnector.getRepositoryIdentifierFromConfiguration(
+                source.connectionConfiguration
+            );
+
+            if (repositoryIdentifier == null) {
+                jobContext.print("WARN", "No repository identifier provided for connector " + source.type);
+                continue;
+            }
+
+            const task = await jobContext.startTask(
+                "Uploading " + source.slug + " credentials" + sourceCredentials.identifier
+            );
+
+            const response = await registry.getClient().mutate({
+                mutation: CreateCredentialDocument,
+                variables: {
+                    identifier: {
+                        catalogSlug: registryRef.catalogSlug,
+                        packageSlug: packageFile.packageSlug
+                    },
+                    connectorType: source.type,
+                    repositoryIdentifier: repositoryIdentifier,
+                    credentialIdentifier: sourceCredentials.identifier,
+                    credential: sourceCredentials.credential
+                }
+            });
+
+            if (response.errors == null) {
+                task.end("ERROR", "Unable to save " + source.slug + " credentials " + sourceCredentials.identifier);
+                // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+                jobContext.print("ERROR", response.errors![0].message);
+            } else {
+                task.end("SUCCESS", "Saved " + source.slug + " credentials " + sourceCredentials.identifier);
+            }
+        }
     }
 
     return returnValue;

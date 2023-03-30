@@ -3,9 +3,19 @@ import { Connector } from "../connector/Connector";
 import { repeatedlyPromptParameters } from "./parameters/ParameterUtils";
 import { getConnectorDescriptionByType } from "../connector/ConnectorUtil";
 import { JobContext, SilentJobContext } from "../task/JobContext";
+import { Maybe, PackageIdentifierInput } from "../main";
+
+export type CredentialAndIdentifier = {
+    identifier: string;
+    credential: DPMConfiguration;
+};
 
 /** Requests from the user credentials for each source - without saving those credentials to any configuration file */
-export async function obtainCredentials(jobContext: JobContext, source: Source): Promise<DPMConfiguration> {
+export async function obtainCredentialsImmutable(
+    jobContext: JobContext,
+    relatedPackage: PackageIdentifierInput | undefined,
+    source: Source
+): Promise<Maybe<CredentialAndIdentifier>> {
     const connectorDescription = getConnectorDescriptionByType(source.type);
 
     if (connectorDescription === undefined) {
@@ -17,16 +27,52 @@ export async function obtainCredentials(jobContext: JobContext, source: Source):
         throw new Error(`Could not find repository implementation for type ${source.type}`);
     }
 
+    let credentialsConfiguration: DPMConfiguration = {};
+
+    const connector = await connectorDescription.getConnector();
+
+    const repositoryIdentifier = await connector.getRepositoryIdentifierFromConfiguration(
+        source.connectionConfiguration
+    );
+
+    if (source.credentialsIdentifier) {
+        const credential = await jobContext.getRepositoryCredential(
+            relatedPackage,
+            source.type,
+            repositoryIdentifier,
+            source.credentialsIdentifier
+        );
+
+        if (credential !== undefined) {
+            credentialsConfiguration = credential;
+
+            jobContext.log("INFO", `Using credentials ${source.credentialsIdentifier} for ${repositoryIdentifier}`);
+        }
+    }
+
     const credentialsPromptResponse = await promptForCredentials(
         jobContext,
         repository,
         source.connectionConfiguration,
-        {},
+        credentialsConfiguration,
         false,
         {}
     );
 
-    return credentialsPromptResponse.credentialsConfiguration;
+    if (!repository.requiresCredentialsConfiguration()) {
+        return null;
+    }
+
+    const identifier = await repository.getCredentialsIdentifierFromConfiguration(
+        source.connectionConfiguration,
+        credentialsPromptResponse.credentialsConfiguration
+    );
+
+    if (identifier == null) {
+        throw new Error("Identifier not supplied by " + source.type);
+    }
+
+    return { identifier, credential: credentialsPromptResponse.credentialsConfiguration };
 }
 
 /** Given a repository and a potentially preconfigured connection and credentials configuration pair,
@@ -34,6 +80,7 @@ export async function obtainCredentials(jobContext: JobContext, source: Source):
  * to the local configuration object */
 export async function obtainCredentialsConfiguration(
     jobContext: JobContext,
+    relatedPackage: PackageIdentifierInput | undefined,
     connector: Connector,
     connectionConfiguration: DPMConfiguration,
     credentialsConfiguration: DPMConfiguration,
@@ -57,9 +104,9 @@ export async function obtainCredentialsConfiguration(
 
     if (repositoryIdentifier == null) throw new Error("Could not find repository identifier");
 
-    let repositoryConfig = jobContext
-        .getRepositoryConfigsByType(connector.getType())
-        .find((c) => c.identifier === repositoryIdentifier);
+    let repositoryConfig = (await jobContext.getRepositoryConfigsByType(relatedPackage, connector.getType())).find(
+        (c) => c.identifier === repositoryIdentifier
+    );
 
     if (repositoryConfig == null) {
         repositoryConfig = {
@@ -72,16 +119,22 @@ export async function obtainCredentialsConfiguration(
     let parameterCount = 0;
 
     if (credentialsIdentifier != null) {
-        const savedCredentials = await jobContext.getRepositoryCredential(
-            connector.getType(),
-            repositoryIdentifier,
-            credentialsIdentifier
-        );
+        try {
+            const savedCredentials = await jobContext.getRepositoryCredential(
+                relatedPackage,
+                connector.getType(),
+                repositoryIdentifier,
+                credentialsIdentifier
+            );
 
-        // purposefully prioritized the credentialsConfiguration over the savedCredentials
-        credentialsConfiguration = { ...savedCredentials, ...credentialsConfiguration };
+            // purposefully prioritized the credentialsConfiguration over the savedCredentials
+            credentialsConfiguration = { ...savedCredentials, ...credentialsConfiguration };
 
-        jobContext.print("INFO", "Using saved credentials for " + credentialsIdentifier);
+            jobContext.print("INFO", "Using saved credentials for " + credentialsIdentifier);
+        } catch (error) {
+            jobContext.print("WARN", "There was a problem reading the saved credentials for " + credentialsIdentifier);
+            jobContext.print("WARN", error.message);
+        }
     }
 
     const pendingParameters = await connector.getCredentialsParameters(
@@ -91,7 +144,6 @@ export async function obtainCredentialsConfiguration(
     );
 
     if (
-        connector.userSelectableConnectionHistory() &&
         !credentialsIdentifier &&
         Object.keys(credentialsConfiguration).length === 0 &&
         pendingParameters.length > 0 &&
@@ -130,11 +182,14 @@ export async function obtainCredentialsConfiguration(
             try {
                 credentialsConfiguration =
                     (await jobContext.getRepositoryCredential(
+                        relatedPackage,
                         connector.getType(),
                         repositoryIdentifier,
                         credentialsPromptResult.credentialsIdentifier
                     )) ?? {};
             } catch (error) {
+                if (error.message.includes("permissions are not 0400")) throw error;
+
                 jobContext.print(
                     "WARN",
                     `There was an error reading the credentials. It is likely the credentials were encrypted with a key other than the one found on the keychain. This means you will need to re-enter the credentials. Choose 'Add or Update Credentials' and re-enter them.`
@@ -154,16 +209,17 @@ export async function obtainCredentialsConfiguration(
 
     parameterCount += credentialsPromptResponse.parameterCount;
 
-    if (connector.userSelectableConnectionHistory() && Object.keys(credentialsConfiguration).length > 0) {
+    if (Object.keys(credentialsConfiguration).length > 0) {
         credentialsIdentifier = await connector.getCredentialsIdentifierFromConfiguration(
             connectionConfiguration,
             credentialsConfiguration
         );
 
         if (credentialsIdentifier) {
-            jobContext.saveRepositoryConfig(connector.getType(), repositoryConfig);
+            await jobContext.saveRepositoryConfig(relatedPackage, connector.getType(), repositoryConfig);
 
             await jobContext.saveRepositoryCredential(
+                relatedPackage,
                 connector.getType(),
                 repositoryIdentifier,
                 credentialsIdentifier,

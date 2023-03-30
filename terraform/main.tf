@@ -225,6 +225,10 @@ resource "google_cloud_run_service" "default" {
           value = random_password.jwt_key.result
         }
         env {
+          name = "NODEJS_ENCRYPTION_KEY"
+          value = random_password.nodejs_encryption_key.result
+        }
+        env {
           name  = "GOOGLE_CLOUD_PROJECT"
           value = google_project.project.project_id
         }
@@ -358,6 +362,11 @@ resource "random_password" "jwt_key" {
   override_special = "_%@"
 }
 
+resource "random_password" "nodejs_encryption_key" {
+  length           = 16
+  special          = true
+  override_special = "_%@"
+}
 resource "random_password" "dbpassword" {
   length           = 16
   special          = true
@@ -546,8 +555,6 @@ resource "google_cloud_scheduler_job" "monthly_notifications_job" {
 }
 
 
-/* 
-FIXME Disabled because it's causing segfaults
 
 resource "google_cloud_scheduler_job" "package_updates" {
   depends_on       = [google_project_service.service]
@@ -571,5 +578,5 @@ resource "google_cloud_scheduler_job" "package_updates" {
     }
     body = base64encode("{\"operationName\":\"runJob\",\"variables\":{\"key\":\"${random_password.scheduler_key.result}\",\"job\":\"PACKAGE_UPDATE\"},\"query\":\"mutation runJob($key: String!, $job: JobType!) { runJob(key: $key, job: $job)}\"}")
   }
-} */
+}
 

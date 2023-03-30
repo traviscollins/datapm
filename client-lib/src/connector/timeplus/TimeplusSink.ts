@@ -19,7 +19,7 @@ import { JobContext } from "../../task/JobContext";
 import { Maybe } from "../../util/Maybe";
 import { StreamSetProcessingMethod } from "../../util/StreamToSinkUtil";
 import { CommitKey, Sink, SinkSupportedStreamOptions, WritableWithContext } from "../Sink";
-import { getAuthToken } from "./TimeplusConnector";
+import { getApiKey } from "./TimeplusConnector";
 import { DISPLAY_NAME, TYPE } from "./TimeplusConnectorDescription";
 import { fetch } from "cross-fetch";
 import { SemVer } from "semver";
@@ -134,13 +134,16 @@ export class TimeplusSink implements Sink {
         if (schema.properties == null) throw new Error("Schema properties not definied, and are required");
         const keys = Object.keys(schema.properties);
 
-        const authToken = getAuthToken(credentialsConfiguration);
+        const apiKey = getApiKey(credentialsConfiguration);
+
+        // eslint-disable-next-line @typescript-eslint/no-this-alias
+        const that = this;
 
         return {
             getCommitKeys: () => {
                 return [] as CommitKey[];
             },
-            outputLocation: `https://${connectionConfiguration.host}/api/v1beta1/streams`,
+            outputLocation: `${connectionConfiguration.base}/api/v1beta1/streams`,
             lastOffset: undefined,
             transforms: [new BatchingTransform(100, 100)],
             writable: new Transform({
@@ -159,13 +162,24 @@ export class TimeplusSink implements Sink {
                         const row = [];
                         for (const key of keys) {
                             const columnName = key;
-                            if (this.hiddenColumns.includes(columnName)) continue;
+                            if (that.hiddenColumns.includes(columnName)) continue;
                             const columnValue = event[key];
                             if (i === 0) {
                                 columns.push(columnName);
                             }
-                            // if (this.columnTypeCache.get(columnName) === "datetime64")
-                            row.push(columnValue);
+                            if (columnValue == null) {
+                                row.push(" "); // set an empty string if the value is null
+                            } else if (typeof columnValue === "object" && !(columnValue instanceof Date)) {
+                                const str = JSON.stringify(columnValue);
+                                if (str === "{}") {
+                                    row.push(" "); // set an empty string if the value is an empty json object
+                                } else {
+                                    row.push(str);
+                                }
+                                // if (that.columnTypeCache.get(columnName) === "json")
+                            } else {
+                                row.push(columnValue);
+                            }
                         }
                         rows.push(row);
                     }
@@ -173,27 +187,28 @@ export class TimeplusSink implements Sink {
                         columns: columns,
                         data: rows
                     };
-                    const ingestURL = `https://${connectionConfiguration.host}/api/v1beta1/streams/${
+                    const bodyStr = JSON.stringify(data);
+                    const ingestURL = `${connectionConfiguration.base}/api/v1beta1/streams/${
                         configuration["stream-name-" + schema.title]
                     }/ingest`;
                     const response = await fetch(ingestURL, {
                         method: "POST",
                         headers: {
-                            Authorization: `Bearer ${authToken}`,
+                            "X-Api-Key": apiKey,
                             "Content-Type": "application/json",
-                            Accept: "application/json"
+                            Accept: "application/json" // don't use application/x-ndjson, because the batch mode is more performant
                         },
-                        body: JSON.stringify(data)
+                        body: bodyStr
                     });
 
                     // shall we use 202?
                     if (response.status !== 200) {
-                        callback(
-                            new Error(`Unexpected response status ${response.status} body ${await response.text()}`)
-                        );
-                        return;
+                        const msg = `Unexpected response status ${response.status} body ${await response.text()}`;
+                        jobContext.print("WARN", `Fail to ingest data in batch, with error message: ${msg}`);
+                        // console.log(bodyStr);
+                        // callback(new Error(msg));
+                        // return;
                     }
-
                     callback(null, records[records.length - 1]);
                 }
             })
@@ -239,13 +254,15 @@ export class TimeplusSink implements Sink {
 
         let stream: TimeplusStream | undefined;
 
-        const url = `https://${connectionConfiguration.host}/api/v1beta1/streams`;
+        const url = `${connectionConfiguration.base}/api/v1beta1/streams`;
+
+        const apiKey = getApiKey(credentialsConfiguration);
 
         const response = await fetch(url, {
             method: "GET",
             headers: {
                 Accept: "application/json",
-                Authorization: `Bearer ${getAuthToken(credentialsConfiguration)}`
+                "X-Api-Key": apiKey
             }
         });
 
@@ -257,10 +274,10 @@ export class TimeplusSink implements Sink {
 
         stream = listStreamsResponse.find((s) => s.name === timeplusStreamName);
 
+        const timeplusColumns = this.getTimeplusColumns(schema);
+
         if (!stream) {
             task.setMessage("Timeplus Stream " + timeplusStreamName + " does not exist, creating");
-
-            const timeplusColumns = this.getTimeplusColumns(schema);
 
             const requestBody = JSON.stringify({
                 name: timeplusStreamName,
@@ -268,12 +285,12 @@ export class TimeplusSink implements Sink {
                 columns: timeplusColumns
             });
 
-            const response = await fetch(`https://${connectionConfiguration.host}/api/v1beta1/streams`, {
+            const response = await fetch(`${connectionConfiguration.base}/api/v1beta1/streams`, {
                 method: "POST",
                 headers: {
                     Accept: "application/json",
                     "Content-Type": "application/json",
-                    Authorization: `Bearer ${getAuthToken(credentialsConfiguration)}`
+                    "X-Api-Key": apiKey
                 },
                 body: requestBody
             });
@@ -350,6 +367,10 @@ export class TimeplusSink implements Sink {
                 return "bool";
             case "date-time":
                 return "datetime64";
+            case "object":
+                return "string"; // use 'string' for more flexible schemas. 'json' type for index-time json extraction (fixed schema, cannot be null)
+            case "array":
+                return "string"; // need further test
             default:
                 throw new Error("Unsupported Timeplus type: " + removedNull[0]);
         }

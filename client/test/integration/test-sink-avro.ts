@@ -40,7 +40,7 @@ describe("AVRO Sink Test", function () {
         );
         const cmdResult = await testCmd(
             "fetch",
-            [packageAFilePath, "--sink", "file", "--sinkConfig", '{"format":"application/avro"}'],
+            [packageAFilePath, "--sinkType", "file", "--sinkConfig", '{"format":"application/avro"}'],
             prompts
         );
 
@@ -61,7 +61,7 @@ describe("AVRO Sink Test", function () {
         const firstRecord = content[0];
         expect(firstRecord.Province_State).equals("Hubei");
         expect(firstRecord.Country_Region).equals("Mainland China");
-        expect(firstRecord.Last_Update).equals(1580557980000);
+        expect(firstRecord.Last_Update).equals("2/1/2020 11:53");
         expect(firstRecord.Confirmed).equals(7153);
         expect(firstRecord.Deaths).equals(249);
         expect(firstRecord.Recovered).equals(168);
@@ -74,7 +74,7 @@ describe("AVRO Sink Test", function () {
         );
         const cmdResult = await testCmd(
             "fetch",
-            [packageBFilePath, "--sink", "file", "--sinkConfig", '{"format":"application/avro"}'],
+            [packageBFilePath, "--sinkType", "file", "--sinkConfig", '{"format":"application/avro"}'],
             prompts
         );
 
@@ -111,7 +111,7 @@ describe("AVRO Sink Test", function () {
         );
         const cmdResult = await testCmd(
             "fetch",
-            [packageCFilePath, "--sink", "file", "--sinkConfig", '{"format":"application/avro"}'],
+            [packageCFilePath, "--sinkType", "file", "--sinkConfig", '{"format":"application/avro"}'],
             prompts
         );
 

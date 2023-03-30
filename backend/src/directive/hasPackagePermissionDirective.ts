@@ -12,18 +12,27 @@ import { Permission, PackageIdentifier, PackageIdentifierInput } from "../genera
 import { PackagePermissionRepository } from "../repository/PackagePermissionRepository";
 import { UserEntity } from "../entity/UserEntity";
 import { getPackageFromCacheOrDbOrFail } from "../resolvers/PackageResolver";
-import { UserPackagePermissionEntity } from "../entity/UserPackagePermissionEntity";
-import { getCatalogPermissionsFromCacheOrDb } from "../resolvers/UserCatalogPermissionResolver";
+import { getCatalogPackagePermissionsFromCacheOrDb } from "../resolvers/UserCatalogPermissionResolver";
 import { isAuthenticatedContext } from "../util/contextHelpers";
+import { GroupPackagePermissionRepository } from "../repository/GroupPackagePermissionRepository";
+import { PackageEntity } from "../entity/PackageEntity";
 
 export async function resolvePackagePermissions(
     context: Context,
     identifier: PackageIdentifierInput,
     user?: UserEntity
 ): Promise<Permission[]> {
+    const packageEntity = await getPackageFromCacheOrDbOrFail(context, identifier);
+    return resolvePackagePermissionsForEntity(context, packageEntity, user);
+}
+
+export async function resolvePackagePermissionsForEntity(
+    context: Context,
+    packageEntity: PackageEntity,
+    user?: UserEntity
+): Promise<Permission[]> {
     const permissions: Permission[] = [];
 
-    const packageEntity = await getPackageFromCacheOrDbOrFail(context, identifier);
     if (packageEntity.isPublic) {
         permissions.push(Permission.VIEW);
     }
@@ -32,50 +41,103 @@ export async function resolvePackagePermissions(
         return permissions;
     }
 
-    const userPermissionPromiseFunction = () =>
-        context.connection.getCustomRepository(PackagePermissionRepository).findPackagePermissions({
-            packageId: packageEntity.id,
-            userId: user.id
-        }) as Promise<UserPackagePermissionEntity>;
-    const userPermission = await context.cache.loadPackagePermissionsById(
-        packageEntity.id,
-        userPermissionPromiseFunction
+    const userPermissionPromiseFunction = async () => {
+        const permissions: Permission[] = [];
+
+        const userPermission = await context.connection
+            .getCustomRepository(PackagePermissionRepository)
+            .findPackagePermissions({
+                packageId: packageEntity.id,
+                userId: user.id
+            });
+
+        if (userPermission != null) {
+            userPermission.permissions.forEach((p) => {
+                if (!permissions.includes(p)) {
+                    permissions.push(p);
+                }
+            });
+        }
+
+        const groupPermisions = await context.connection
+            .getCustomRepository(GroupPackagePermissionRepository)
+            .getPackagePermissionsByUser({
+                packageId: packageEntity.id,
+                userId: user.id
+            });
+
+        if (groupPermisions != null) {
+            for (const groupPermission of groupPermisions) {
+                for (const permission of groupPermission.permissions) {
+                    if (!permissions.includes(permission)) {
+                        permissions.push(permission);
+                    }
+                }
+            }
+        }
+
+        return permissions;
+    };
+
+    const packagePermissions =
+        (await context.cache.loadPackagePermissionsById(packageEntity.id, userPermissionPromiseFunction)) || [];
+
+    const catalogPermissions = await getCatalogPackagePermissionsFromCacheOrDb(
+        context,
+        packageEntity.catalogId,
+        user.id
     );
 
-    if (userPermission != null) {
-        userPermission.permissions.forEach((p) => {
-            if (!permissions.includes(p)) {
-                permissions.push(p);
-            }
-        });
-    }
+    const allPermissions = permissions.concat(catalogPermissions).concat(packagePermissions);
 
-    const catalogPermissions = await getCatalogPermissionsFromCacheOrDb(context, packageEntity.catalogId, user!.id);
-    if (catalogPermissions != null) {
-        catalogPermissions.packagePermission.forEach((p) => {
-            if (!permissions.includes(p)) {
-                permissions.push(p);
-            }
-        });
-    }
-
-    return permissions;
+    return allPermissions.filter((v, i, a) => a.indexOf(v) === i);
 }
 
-export async function hasPermission(
+export async function hasPackagePermissionForEntity(
+    permission: Permission,
+    context: Context,
+    packageEntity: PackageEntity
+): Promise<boolean> {
+    const isAuthenicatedContext = isAuthenticatedContext(context);
+
+    const permissions = await resolvePackagePermissionsForEntity(
+        context,
+        packageEntity,
+        isAuthenicatedContext ? (context as AuthenticatedContext).me : undefined
+    );
+
+    return permissions.includes(permission);
+}
+
+export async function hasPackagePermission(
     permission: Permission,
     context: Context,
     identifier: PackageIdentifierInput
-): Promise<void> {
-
+): Promise<boolean> {
     const isAuthenicatedContext = isAuthenticatedContext(context);
 
     // Check that the package exists
-    const permissions = await resolvePackagePermissions(context, identifier,  isAuthenicatedContext ? (context as AuthenticatedContext).me : undefined);
+    const permissions = await resolvePackagePermissions(
+        context,
+        identifier,
+        isAuthenicatedContext ? (context as AuthenticatedContext).me : undefined
+    );
 
-    if (permissions.includes(permission)) {
-        return;
+    return permissions.includes(permission);
+}
+
+export async function hasPackagePermissionOrFail(
+    permission: Permission,
+    context: Context,
+    identifier: PackageIdentifierInput
+): Promise<true> {
+    const hasPermissionBoolean = await hasPackagePermission(permission, context, identifier);
+
+    if (hasPermissionBoolean) {
+        return true;
     }
+
+    const isAuthenicatedContext = isAuthenticatedContext(context);
 
     if (!isAuthenicatedContext) {
         throw new AuthenticationError("NOT_AUTHENTICATED");
@@ -85,9 +147,9 @@ export async function hasPermission(
 }
 
 export class HasPackagePermissionDirective extends SchemaDirectiveVisitor {
-    visitObject(object: GraphQLObjectType) {
+    visitObject(object: GraphQLObjectType): void {
         const fields = object.getFields();
-        for (let field of Object.values(fields)) {
+        for (const field of Object.values(fields)) {
             this.visitFieldDefinition(field);
         }
     }
@@ -95,23 +157,24 @@ export class HasPackagePermissionDirective extends SchemaDirectiveVisitor {
     visitArgumentDefinition(
         argument: GraphQLArgument,
         details: {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             field: GraphQLField<any, any>;
             objectType: GraphQLObjectType | GraphQLInterfaceType;
         }
     ): GraphQLArgument | void | null {
         const { resolve = defaultFieldResolver } = details.field;
-        const permission = (argument
-            .astNode!.directives!.find((d) => d.name.value == "hasPackagePermission")!
-            .arguments!.find((a) => a.name.value == "permission")!.value as EnumValueNode).value as Permission;
+        const permission = (argument.astNode?.directives
+            ?.find((d) => d.name.value === "hasPackagePermission")
+            ?.arguments?.find((a) => a.name.value === "permission")?.value as EnumValueNode).value as Permission;
 
         details.field.resolve = async function (source, args, context: AuthenticatedContext, info) {
             const identifier: PackageIdentifierInput = args[argument.name];
-            await hasPermission(permission, context, identifier);
+            await hasPackagePermissionOrFail(permission, context, identifier);
             return resolve.apply(this, [source, args, context, info]);
         };
     }
 
-    visitFieldDefinition(field: GraphQLField<any, any>) {
+    visitFieldDefinition(field: GraphQLField<unknown, Context>): void {
         const { resolve = defaultFieldResolver } = field;
         const permission: Permission = this.args.permission;
         field.resolve = async function (source, args, context: Context, info) {
@@ -119,7 +182,7 @@ export class HasPackagePermissionDirective extends SchemaDirectiveVisitor {
 
             if (identifier === undefined) throw new ApolloError(`INTERNAL_ERROR`);
 
-            await hasPermission(permission, context, identifier);
+            await hasPackagePermissionOrFail(permission, context, identifier);
             return resolve.apply(this, [source, args, context, info]);
         };
     }

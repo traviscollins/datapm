@@ -8,8 +8,11 @@ import { AddPackageComponent } from "src/app/collection-details/add-package/add-
 import { packageToIdentifier } from "src/app/helpers/IdentifierHelper";
 import { AuthenticationService } from "src/app/services/authentication.service";
 import { SnackBarService } from "src/app/services/snackBar.service";
+import { CommandModalComponent } from "src/app/shared/command-modal/command-modal.component";
+import { UpdateModalComponent } from "src/app/shared/command-modal/update/update-modal.component";
 import { ShareDialogComponent } from "src/app/shared/dialogs/share-dialog/share-dialog.component";
-import { Package, User } from "src/generated/graphql";
+import { CurrentUser, Package, Permission } from "src/generated/graphql";
+import { PackageService } from "../../services/package.service";
 import { AddUserComponent } from "../add-user/add-user.component";
 import { ClientWizardComponent } from "./download-package/client-wizard/client-wizard.component";
 import { DownloadPackageComponent } from "./download-package/download-package.component";
@@ -21,13 +24,15 @@ import { EditWebsiteDialogComponent } from "./edit-website-dialog/edit-website-d
     styleUrls: ["./package-info.component.scss"]
 })
 export class PackageInfoComponent implements OnInit, OnChanges {
+    Permission = Permission;
+
     @Input()
     public package: Package;
 
     @Input()
     public packageFile: PackageFile;
 
-    public currentUser: User;
+    public currentUser: CurrentUser;
     public packageUnit: string;
 
     public packageSizeBytes: number = 0;
@@ -37,23 +42,26 @@ export class PackageInfoComponent implements OnInit, OnChanges {
     constructor(
         private snackBarService: SnackBarService,
         private dialog: MatDialog,
-        private authenticationService: AuthenticationService
+        private authenticationService: AuthenticationService,
+        private packageService: PackageService
     ) {}
 
     public ngOnInit(): void {
         this.authenticationService.currentUser
             .pipe(takeUntil(this.unsubscribe$))
-            .subscribe((user: User) => (this.currentUser = user));
+            .subscribe((user: CurrentUser) => (this.currentUser = user));
     }
 
     public ngOnChanges(): void {
         this.packageUnit = this.parsePackageUnit();
 
-        this.packageSizeBytes =
-            this.packageFile.sources.reduce(
-                (sum, item) => sum + item.streamSets.reduce((sum, item) => sum + item.streamStats.byteCount, 0),
-                0
-            ) || 0;
+        if (this.packageFile) {
+            this.packageSizeBytes =
+                this.packageFile.sources?.reduce(
+                    (sum, item) => sum + item.streamSets.reduce((sum, item) => sum + item.streamStats.byteCount, 0),
+                    0
+                ) || 0;
+        }
     }
 
     public getRecordCount(packageFile: PackageFile): string {
@@ -61,9 +69,8 @@ export class PackageInfoComponent implements OnInit, OnChanges {
             return "";
         }
 
-        const streamSets = packageFile
-            .sources.reduce((a,b) => [...a,...b.streamSets],new Array<StreamSet>());
-            
+        const streamSets = packageFile.sources.reduce((a, b) => [...a, ...b.streamSets], new Array<StreamSet>());
+
         const count = streamSets.reduce((a, b) => a + (b.streamStats.recordCount || 0), 0);
 
         let prefix = "";
@@ -81,7 +88,7 @@ export class PackageInfoComponent implements OnInit, OnChanges {
             prefix = "~";
         }
 
-        return prefix + formatNumber(count, "en-US" );
+        return prefix + formatNumber(count, "en-US");
     }
 
     public get generatedFetchCommand() {
@@ -163,6 +170,24 @@ export class PackageInfoComponent implements OnInit, OnChanges {
         } else {
             return false;
         }
+    }
+
+    public refreshData() {
+        const dialogRef = this.dialog
+            .open(UpdateModalComponent, {
+                data: {
+                    targetPackage: this.package.identifier,
+                    command: "update"
+                },
+                width: "90vw",
+                maxWidth: "800px",
+                height: "90vh",
+                maxHeight: "600px",
+                disableClose: true,
+                panelClass: "command-modal"
+            })
+            .afterClosed()
+            .subscribe(() => {});
     }
 
     addToCollection(packageObject: Package) {

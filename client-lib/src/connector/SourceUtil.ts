@@ -1,22 +1,18 @@
 import {
     CountPrecision,
     DPMConfiguration,
-    DPMPropertyTypes,
     DPMRecord,
     DPMRecordValue,
-    Properties,
-    Property,
     Schema,
+    Source,
     StreamStats,
-    UpdateMethod,
-    ValueTypes
+    UpdateMethod
 } from "datapm-lib";
 import { Writable } from "stream";
 import { clearInterval } from "timers";
 import { Maybe } from "../util/Maybe";
 import { InflatedByteCountTransform } from "../transforms/InflatedByteCountTransform";
 import { StatsTransform } from "../transforms/StatsTransform";
-import { ContentLabelDetector } from "../content-detector/ContentLabelDetector";
 import {
     SourceDescription,
     SourceStreamsInspectionResult,
@@ -29,6 +25,7 @@ import { ConnectorDescription } from "./Connector";
 import { EXTENDED_CONNECTORS } from "./ConnectorUtil";
 import { BatchingTransform } from "../transforms/BatchingTransform";
 import { TimeOrDeathTransform } from "../transforms/TimeOrDeathTransform";
+import { RecordStreamContextTransform } from "../transforms/RecordStreamContextTransform";
 
 export async function getSourcesDescriptions(): Promise<SourceDescription[]> {
     const returnValue: SourceDescription[] = [];
@@ -77,6 +74,7 @@ export async function findRepositoryForSourceUri(uri: string): Promise<Connector
 }
 
 export async function generateSchemasFromSourceStreams(
+    source: Source,
     streamSetPreview: StreamSetPreview,
     streamStatusContext: StreamStatusContext,
     _configuration: DPMConfiguration,
@@ -100,6 +98,10 @@ export async function generateSchemasFromSourceStreams(
 
     const timeoutMs = inspectionSeconds * 1000;
 
+    // Holds the next stream that will be opened
+    let nextStreamIndex = 0;
+    let currentStreamSummary: StreamSummary | null = null;
+
     const interval = setInterval(() => {
         if (completed || error) {
             clearInterval(interval);
@@ -109,6 +111,7 @@ export async function generateSchemasFromSourceStreams(
         const recordsInspectedCount = completedStreamsInspectedRecordCount + currentStreamInspectedCount;
         const currentTime = Date.now();
         streamStatusContext.onProgress({
+            currentStreamName: currentStreamSummary?.name || "",
             msRemaining: timeoutMs - (currentTime - startTime),
             bytesProcessed: bytesReceived,
             recordsInspectedCount: recordsInspectedCount,
@@ -127,12 +130,6 @@ export async function generateSchemasFromSourceStreams(
         returnPromiseReject = reject;
         returnPromiseResolve = resolve;
     });
-
-    // Holds the next stream that will be opened
-    let nextStreamIndex = 0;
-    let currentStreamSummary: StreamSummary | null = null;
-
-    const contentLabelDetector = new ContentLabelDetector();
 
     const moveToNextStream = async function () {
         completedStreamsRecordCount += currentStreamRecordCount;
@@ -182,7 +179,6 @@ export async function generateSchemasFromSourceStreams(
                 return "INSPECT";
             },
             schemas,
-            contentLabelDetector,
             {
                 objectMode: true
             }
@@ -214,6 +210,10 @@ export async function generateSchemasFromSourceStreams(
         });
 
         lastTransform = lastTransform.pipe(new BatchingTransform(1000, 100));
+
+        lastTransform = lastTransform.pipe(
+            new RecordStreamContextTransform(source, streamSetPreview, currentStreamSummary)
+        );
 
         lastTransform = lastTransform.pipe(statsTransform);
 
@@ -250,12 +250,16 @@ export async function generateSchemasFromSourceStreams(
         completed = true;
         const currentTime = Date.now();
 
+        const inspectedCount = completedStreamsInspectedRecordCount + (reachedEnd ? 0 : currentStreamInspectedCount);
+        const recordCount = completedStreamsRecordCount + (reachedEnd ? 0 : currentStreamRecordCount);
+
         streamStatusContext.onComplete({
+            currentStreamName: currentStreamSummary?.name || "",
             msRemaining: 0,
             bytesProcessed: bytesReceived,
-            recordsInspectedCount: completedStreamsInspectedRecordCount,
-            recordCount: completedStreamsRecordCount,
-            recordsPerSecond: completedStreamsRecordCount / ((currentTime - startTime) / 1000),
+            recordsInspectedCount: inspectedCount,
+            recordCount,
+            recordsPerSecond: recordCount / ((currentTime - startTime) / 1000),
             final: true
         });
 
@@ -289,17 +293,18 @@ export async function generateSchemasFromSourceStreams(
         }
 
         const streamStats: StreamStats = {
-            inspectedCount: completedStreamsInspectedRecordCount,
+            inspectedCount,
             byteCount: byteCount > 0 ? byteCount : undefined,
             byteCountPrecision: byteCount > 0 ? byteCountPrecision : undefined,
-            recordCount: completedStreamsRecordCount,
+            recordCount,
             recordCountPrecision
         };
 
         returnPromiseResolve({
             schemas: Object.values(schemas),
             streamStats,
-            updateMethods
+            updateMethods,
+            endReached: reachedEnd
         });
     };
 
@@ -309,8 +314,6 @@ export async function generateSchemasFromSourceStreams(
 }
 
 function finalizeSchema(reachedEnd: boolean, schema: Schema): void {
-    const properties = schema.properties as Properties;
-
     let recordCountPrecision = CountPrecision.EXACT;
 
     if (!reachedEnd) {

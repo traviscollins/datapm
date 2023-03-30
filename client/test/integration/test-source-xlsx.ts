@@ -1,6 +1,6 @@
 import { expect } from "chai";
-import { loadPackageFileFromDisk, Properties } from "datapm-lib";
-import { removePackageFiles, TEST_SOURCE_FILES, testCmd, getPromptInputs } from "./test-utils";
+import { Properties } from "datapm-lib";
+import { removePackageFiles, TEST_SOURCE_FILES, testCmd, getPromptInputs, loadTestPackageFile } from "./test-utils";
 
 describe("XLSX Source Tests", function () {
     after(() => {
@@ -13,12 +13,10 @@ describe("XLSX Source Tests", function () {
             "Rename attributes",
             "derived from other 'upstream data'?",
             "record represent",
-            "Do you want to specify units",
             "Exclude any attributes",
             "Rename attributes",
             "derived from other 'upstream data'?",
             "record represent",
-            "Do you want to specify units",
             "User friendly package name?",
             "Package short name?",
             "Starting version?",
@@ -35,10 +33,8 @@ describe("XLSX Source Tests", function () {
             "",
             "n",
             "n",
-            "n",
             "",
             "",
-            "n",
             "covid-us",
             "",
             "",
@@ -53,7 +49,7 @@ describe("XLSX Source Tests", function () {
     });
 
     it("Package file content should be correct", async () => {
-        const packageFile = loadPackageFileFromDisk("covid-us.datapm.json");
+        const packageFile = loadTestPackageFile("covid-us");
 
         expect(packageFile.displayName).equal("covid-us");
 

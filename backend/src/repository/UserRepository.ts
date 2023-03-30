@@ -18,6 +18,8 @@ import { CollectionRepository } from "./CollectionRepository";
 import { StorageErrors } from "../storage/files/file-storage-service";
 import { FirstUserStatusHolder } from "../resolvers/FirstUserStatusHolder";
 import { ReservedKeywordsService } from "../service/reserved-keywords-service";
+import { GroupRepository } from "./GroupRepository";
+
 // https://stackoverflow.com/a/52097700
 export function isDefined<T>(value: T | undefined | null): value is T {
     return <T>value !== undefined && <T>value !== null;
@@ -45,7 +47,7 @@ export async function getUserByUserName({
     relations?: string[];
 }): Promise<UserEntity | null> {
     const ALIAS = "users";
-    let query = manager
+    const query = manager
         .getRepository(UserEntity)
         .createQueryBuilder(ALIAS)
         .where(`LOWER(username) = :username`)
@@ -114,23 +116,19 @@ function addUserToMixpanel(user: UserEntity, invitedByUserEmail: string) {
 
 @EntityRepository(UserEntity)
 export class UserRepository extends Repository<UserEntity> {
-    constructor() {
-        super();
-    }
-
     public async isAtLeastOneUserRegistered(): Promise<boolean> {
         return (await this.createQueryBuilder().getOne()) != null;
     }
 
-    getUserByUsername(username: string) {
+    async getUserByUsername(username: string): Promise<UserEntity | null> {
         const ALIAS = "getUsername";
 
-        const user = getUserByUserName({ username, manager: this.manager });
+        const user = await getUserByUserName({ username, manager: this.manager });
 
         return user;
     }
 
-    getUserByUsernameOrEmailAddress(username: string) {
+    async getUserByUsernameOrEmailAddress(username: string): Promise<UserEntity | undefined> {
         const ALIAS = "getUsername";
 
         const user = this.createQueryBuilder(ALIAS)
@@ -142,7 +140,7 @@ export class UserRepository extends Repository<UserEntity> {
         return user;
     }
 
-    findByEmailValidationToken(token: String) {
+    findByEmailValidationToken(token: string): Promise<UserEntity | undefined> {
         const ALIAS = "getUsername";
 
         const user = this.createQueryBuilder(ALIAS)
@@ -152,7 +150,7 @@ export class UserRepository extends Repository<UserEntity> {
         return user;
     }
 
-    getUserByEmail(emailAddress: string) {
+    getUserByEmail(emailAddress: string): Promise<UserEntity | undefined> {
         const ALIAS = "getByEmailAddress";
 
         const user = this.createQueryBuilder(ALIAS)
@@ -162,7 +160,7 @@ export class UserRepository extends Repository<UserEntity> {
         return user;
     }
 
-    getUserByLogin(username: string, relations: string[] = []) {
+    getUserByLogin(username: string, relations: string[] = []): Promise<UserEntity | undefined> {
         const ALIAS = "getByLogin";
 
         const user = this.createQueryBuilder(ALIAS)
@@ -174,14 +172,21 @@ export class UserRepository extends Repository<UserEntity> {
         return user;
     }
 
-    findMe({ id, relations = [] }: { id: number; relations?: string[] }) {
+    findMe({ id, relations = [] }: { id: number; relations?: string[] }): Promise<UserEntity | undefined> {
         return this.findOneOrFail({
             where: { id: id },
             relations: relations
         });
     }
 
-    async findUser({ username, relations = [] }: { username: string; catalogId?: number; relations?: string[] }) {
+    async findUser({
+        username,
+        relations = []
+    }: {
+        username: string;
+        catalogId?: number;
+        relations?: string[];
+    }): Promise<UserEntity> {
         return getUserOrFail({
             username: username,
             manager: this.manager,
@@ -189,7 +194,13 @@ export class UserRepository extends Repository<UserEntity> {
         });
     }
 
-    findUserByUserName({ username, relations = [] }: { username: string; relations?: string[] }) {
+    findUserByUserName({
+        username,
+        relations = []
+    }: {
+        username: string;
+        relations?: string[];
+    }): Promise<UserEntity | undefined> {
         return getUserByUsernameOrFail({
             username: username,
             manager: this.manager,
@@ -197,14 +208,34 @@ export class UserRepository extends Repository<UserEntity> {
         });
     }
 
-    async findUserByRecoveryPasswordToken(token: String) {
+    findUserByUserNameOrFail({
+        username,
+        relations = []
+    }: {
+        username: string;
+        relations?: string[];
+    }): Promise<UserEntity> {
+        const user = getUserByUsernameOrFail({
+            username: username,
+            manager: this.manager,
+            relations
+        });
+
+        if (user == null) {
+            throw new Error(`USER_NOT_FOUND - ${username}`);
+        }
+
+        return user;
+    }
+
+    async findUserByRecoveryPasswordToken(token: string): Promise<UserEntity | undefined> {
         const ALIAS = "getUserByRecoveryPasswordToken";
         const user = await this.createQueryBuilder(ALIAS).where({ passwordRecoveryToken: token }).getOne();
 
         return user;
     }
 
-    findUsers({ relations = [] }: { relations?: string[] }) {
+    findUsers({ relations = [] }: { relations?: string[] }): Promise<UserEntity[]> {
         const ALIAS = "users";
         return this.manager
             .getRepository(UserEntity)
@@ -213,7 +244,7 @@ export class UserRepository extends Repository<UserEntity> {
             .getMany();
     }
 
-    findAllUsers(relations: string[] = []) {
+    findAllUsers(relations: string[] = []): Promise<UserEntity[]> {
         const ALIAS = "users";
         return this.manager
             .getRepository(UserEntity)
@@ -310,12 +341,13 @@ export class UserRepository extends Repository<UserEntity> {
 
     createInviteUser(emailAddress: string): Promise<UserEntity> {
         return this.manager.nestedTransaction(async (transaction) => {
-            let user = transaction.create(UserEntity);
-            user.emailAddress = emailAddress.trim();
+            const user = transaction.create(UserEntity);
+            user.emailAddress = emailAddress.trim().toLowerCase();
             user.verifyEmailToken = uuid();
             user.verifyEmailTokenDate = new Date();
             user.passwordSalt = uuid();
             user.emailVerified = false;
+            user.username = "invited-" + uuid().substring(0, 8);
 
             const now = new Date();
             user.createdAt = now;
@@ -337,6 +369,7 @@ export class UserRepository extends Repository<UserEntity> {
         value: CreateUserInput;
         relations?: string[];
     }): Promise<UserEntity> {
+        // eslint-disable-next-line @typescript-eslint/no-this-alias
         const self: UserRepository = this;
         const isAdmin = (input: CreateUserInput | CreateUserInputAdmin): input is CreateUserInputAdmin => {
             return (input as CreateUserInputAdmin) !== undefined;
@@ -344,65 +377,67 @@ export class UserRepository extends Repository<UserEntity> {
 
         ReservedKeywordsService.validateReservedKeyword(value.username);
         const emailVerificationToken = uuid();
-        return this.manager
-            .nestedTransaction(async (transaction) => {
-                if (value.firstName != null) user.firstName = value.firstName.trim();
+        return (
+            this.manager
+                .nestedTransaction(async (transaction) => {
+                    if (value.firstName != null) user.firstName = value.firstName.trim();
 
-                if (value.lastName != null) user.lastName = value.lastName.trim();
+                    if (value.lastName != null) user.lastName = value.lastName.trim();
 
-                user.emailAddress = value.emailAddress.trim();
-                user.username = value.username.trim();
-                user.passwordSalt = uuid();
-                user.passwordHash = hashPassword(value.password, user.passwordSalt);
+                    user.emailAddress = value.emailAddress.trim();
+                    user.username = value.username.trim();
+                    user.passwordSalt = uuid();
+                    user.passwordHash = hashPassword(value.password, user.passwordSalt);
 
-                user.verifyEmailToken = emailVerificationToken;
-                user.verifyEmailTokenDate = new Date();
+                    user.verifyEmailToken = emailVerificationToken;
+                    user.verifyEmailTokenDate = new Date();
 
-                if (user.emailVerified == null) user.emailVerified = false;
+                    if (user.emailVerified == null) user.emailVerified = false;
 
-                const now = new Date();
-                user.createdAt = now;
-                user.updatedAt = now;
+                    const now = new Date();
+                    user.createdAt = now;
+                    user.updatedAt = now;
 
-                user.uiDarkModeEnabled = value.uiDarkModeEnabled || false;
+                    user.uiDarkModeEnabled = value.uiDarkModeEnabled || false;
 
-                user.status = UserStatus.ACTIVE;
+                    user.status = UserStatus.ACTIVE;
 
-                if (!FirstUserStatusHolder.IS_FIRST_USER_CREATED) {
-                    FirstUserStatusHolder.IS_FIRST_USER_CREATED = await this.isAtLeastOneUserRegistered();
-                }
-
-                if (!FirstUserStatusHolder.IS_FIRST_USER_CREATED || (isAdmin(value) && value.isAdmin)) {
-                    user.isAdmin = true;
-                } else {
-                    user.isAdmin = false;
-                }
-
-                user = await transaction.save(user);
-                await transaction.getCustomRepository(CatalogRepository).createCatalog({
-                    userId: user.id,
-                    value: {
-                        description: "",
-                        isPublic: false,
-                        displayName: user.username,
-                        slug: user.username,
-                        website: user.website
+                    if (!FirstUserStatusHolder.IS_FIRST_USER_CREATED) {
+                        FirstUserStatusHolder.IS_FIRST_USER_CREATED = await this.isAtLeastOneUserRegistered();
                     }
-                });
 
-                return user;
-            })
+                    if (!FirstUserStatusHolder.IS_FIRST_USER_CREATED || (isAdmin(value) && value.isAdmin)) {
+                        user.isAdmin = true;
+                    } else {
+                        user.isAdmin = false;
+                    }
 
-            // FIX ME this should just use an await above, and handled errors in sendVerifyEmail
-            .then(async (user: UserEntity) => {
-                if (!user.emailVerified) await sendVerifyEmail(user, emailVerificationToken);
+                    user = await transaction.save(user);
+                    await transaction.getCustomRepository(CatalogRepository).createCatalog({
+                        userId: user.id,
+                        value: {
+                            description: "",
+                            isPublic: false,
+                            displayName: user.username,
+                            slug: user.username,
+                            website: user.website
+                        }
+                    });
 
-                return getUserOrFail({
-                    username: value.username,
-                    manager: self.manager,
-                    relations
-                });
-            });
+                    return user;
+                })
+
+                // FIX ME this should just use an await above, and handled errors in sendVerifyEmail
+                .then(async (user: UserEntity) => {
+                    if (!user.emailVerified) await sendVerifyEmail(user, emailVerificationToken);
+
+                    return getUserOrFail({
+                        username: value.username,
+                        manager: self.manager,
+                        relations
+                    });
+                })
+        );
     }
 
     updateUserPassword({ username, passwordHash }: { username: string; passwordHash: string }): Promise<void> {
@@ -441,7 +476,7 @@ export class UserRepository extends Repository<UserEntity> {
             const dbUser = await this.findUserByRecoveryPasswordToken(value.token);
 
             // // return error if current user token is not the same as input token
-            if (dbUser?.passwordRecoveryToken != value.token) throw new UserInputError("TOKEN_NOT_VALID");
+            if (dbUser?.passwordRecoveryToken !== value.token) throw new UserInputError("TOKEN_NOT_VALID");
 
             // return error if token is more than 4 hours expired
             if (dbUser.passwordRecoveryToken && dbUser.passwordRecoveryTokenDate) {
@@ -629,5 +664,11 @@ export class UserRepository extends Repository<UserEntity> {
         const value = response[0].max as Date;
 
         return value || new Date();
+    }
+
+    async userIsAdmin(user: UserEntity): Promise<boolean> {
+        if (user.isAdmin) return true;
+
+        return this.manager.getCustomRepository(GroupRepository).userIsMemberOfAdminGroup(user);
     }
 }

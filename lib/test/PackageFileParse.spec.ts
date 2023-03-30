@@ -1,11 +1,12 @@
 import { loadPackageFileFromDisk, PackageFile, parsePackageFileJSON, validatePackageFile } from "../src/main";
 import { expect } from "chai";
 import fs from "fs";
+import { isDate } from "util/types";
 
 describe("PackageFile checks", () => {
     it("Should have correct schema value", function () {
         const test = new PackageFile();
-        expect(test.$schema).equal("https://datapm.io/docs/package-file-schema-v0.9.0.json");
+        expect(test.$schema).equal("https://datapm.io/docs/package-file-schema-v0.32.1.json");
     });
 
     it("Should parse dates", async function () {
@@ -75,5 +76,18 @@ describe("PackageFile checks", () => {
     it("Should have v0.8.0 canonical value true", async function () {
         const packageFile = loadPackageFileFromDisk("test/packageFiles/congressional-legislators.datapm.json");
         expect(packageFile.canonical).equal(true);
+    });
+    it("Should parse heirarchical object schema", async function () {
+        const packageFile = loadPackageFileFromDisk("test/packageFiles/object-test.datapm.json");
+        expect(
+            packageFile.schemas[0].properties?.testObject.types?.object?.objectProperties?.subObject.types.object
+                ?.recordCount
+        ).equal(1);
+    });
+
+    it("Should parse all date values in schema", async function () {
+        const packageFile = loadPackageFileFromDisk("test/packageFiles/twitter-sample-1.0.0.datapm.json");
+
+        expect(isDate(packageFile.schemas[0].properties?.author.firstSeen)).equal(true);
     });
 });

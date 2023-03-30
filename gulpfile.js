@@ -78,16 +78,16 @@ function buildRegistryDockerImage() {
     ]);
 }
 
-/* function buildClientDockerImage() {
+function buildClientDockerImage() {
     return spawnAndLog("client-docker-build", "docker", [
         "build",
         "-t",
         "datapm-client",
-        "./client/dist",
+        "./dist-client",
         "-f",
-        "client/docker/Dockerfile"
+        "docker/Dockerfile-client"
     ]);
-} */
+}
 
 function buildClient() {
     return spawnAndLog("client-build", "npm", ["run", "build"], { cwd: "client" });
@@ -163,20 +163,18 @@ function tagRegistryDockerImageVersion() {
     ]);
 }
 
-/* 
 function tagClientDockerImageLatest() {
-    return spawnAndLog("client-docker-tag", "docker", ["tag", "datapm-client", "datapm/datapm-client:latest"]);
+    return spawnAndLog("client-docker-tag", "docker", ["tag", "datapm-client", "datapm/client:latest"]);
 }
 
 function tagClientDockerImageVersion() {
     return spawnAndLog("client-docker-tag", "docker", [
         "tag",
         "datapm-client",
-        "datapm/datapm-client:" + readPackageVersion()
+        "datapm/client:" + readPackageVersion()
     ]);
 }
 
-*/
 function pushRegistryDockerImage() {
     return spawnAndLog("registry-docker-push-docker", "docker", [
         "push",
@@ -188,15 +186,13 @@ function pushRegistryDockerImageLatest() {
     return spawnAndLog("registry-docker-push-docker", "docker", ["push", "datapm/datapm-registry:latest"]);
 }
 
-/* 
 function pushClientDockerImage() {
-    return spawnAndLog("client-docker-push-docker", "docker", ["push", "datapm/datapm-client:" + readPackageVersion()]);
+    return spawnAndLog("client-docker-push-docker", "docker", ["push", "datapm/client:" + readPackageVersion()]);
 }
 
 function pushClientDockerImageLatest() {
-    return spawnAndLog("client-docker-push-docker", "docker", ["push", "datapm/datapm-client:latest"]);
+    return spawnAndLog("client-docker-push-docker", "docker", ["push", "datapm/client:latest"]);
 }
-*/
 
 function gitTag() {
     return spawnAndLog("git-tag", "git", ["tag", "-a", readPackageVersion(), "-m", "Release " + readPackageVersion()]);
@@ -230,6 +226,17 @@ function spawnAndLog(prefix, command, args, opts) {
 
 function showGitDiff() {
     return spawnAndLog("git-diff", "git", ["diff"]);
+}
+
+/** Tasks that must be completed before building the client docker image. The build context
+ * is the "dist-client" directory in the root project folder.
+ */
+function prepareClientDockerBuildAssets() {
+    const task1 = src(["dist/client-installers/datapm-client*.deb"]).pipe(
+        dest(path.join("dist-client", "client-installers"))
+    );
+
+    return merge(task1);
 }
 
 /** Tasks that must be completed before running the docker file. The docker file's build
@@ -307,6 +314,20 @@ function cleanDocs() {
     return spawnAndLog("clean-lib", "npm", ["run", "clean"], { cwd: "docs/website" });
 }
 
+async function checkNodeVersion() {
+    const packageFileString = fs.readFileSync("package.json", "utf8");
+    const packageFile = JSON.parse(packageFileString);
+    const nodeVersion = packageFile.engines.node;
+    const currentNodeVersion = process.version;
+
+    const semVer = require("semver");
+    if (!semVer.satisfies(currentNodeVersion, nodeVersion)) {
+        throw new Error(
+            "The current node version is " + currentNodeVersion + " but the package.json requires " + nodeVersion + "."
+        );
+    }
+}
+
 exports.default = series(
     installLibDependencies,
     buildLib,
@@ -325,8 +346,8 @@ exports.default = series(
     deleteLibInClientLibNodeModules,
     buildRegistryDockerImage,
     installClientDependencies,
-    buildClient
-    //   buildClientDockerImage
+    buildClient,
+    buildClientDockerImage
 );
 
 exports.buildParallel = series(
@@ -358,14 +379,14 @@ exports.deployAssets = series(
     tagRegistryGCRDockerImageVersion,
     tagRegistryDockerImageLatest,
     tagRegistryDockerImageVersion,
-    // tagClientDockerImageLatest,
-    // tagClientDockerImageVersion,
+    tagClientDockerImageLatest,
+    tagClientDockerImageVersion,
     pushRegistryGCRImage,
     pushRegistryGCRImageLatest,
     pushRegistryDockerImage,
-    pushRegistryDockerImageLatest
-    // pushClientDockerImage,
-    // pushClientDockerImageLatest
+    pushRegistryDockerImageLatest,
+    pushClientDockerImage,
+    pushClientDockerImageLatest
 );
 
 exports.buildRegistryDockerImage = series(
@@ -376,7 +397,10 @@ exports.buildRegistryDockerImage = series(
     buildRegistryDockerImage
 );
 
+exports.buildClientDockerImage = series(prepareClientDockerBuildAssets, buildClientDockerImage);
+
 exports.prepareDevEnvironment = series(
+    checkNodeVersion,
     installLibDependencies,
     installClientLibDependencies,
     installBackendDependencies,
@@ -387,3 +411,5 @@ exports.prepareDevEnvironment = series(
 );
 
 exports.clean = series(cleanLib, cleanClientLib, cleanClient, cleanBackend, cleanFrontend, cleanDocs, cleanRoot);
+
+exports.checkNodeVersion = checkNodeVersion;

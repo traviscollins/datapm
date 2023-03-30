@@ -22,6 +22,7 @@ export async function editPackage(argv: EditArguments): Promise<void> {
         const results = await editJob.execute();
 
         if (results.exitCode !== 0) {
+            oraRef.fail(chalk.red(results.errorMessage));
             process.exit(results.exitCode);
         }
 
@@ -34,7 +35,10 @@ export async function editPackage(argv: EditArguments): Promise<void> {
         if (packageFileWithContext.contextType === "localFile") {
             console.log("");
             console.log(chalk.grey("When you are ready, you can publish with the following command"));
-            console.log(chalk.green(`datapm publish ${packageFileWithContext.packageFileUrl.replace("file://", "")}`));
+            console.log(
+                chalk.green(`datapm publish ${packageFileWithContext.packageReference.replace("file://", "")}`)
+            );
+            console.log("");
             process.exit(0);
         }
 

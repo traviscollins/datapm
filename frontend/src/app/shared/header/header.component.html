@@ -4,7 +4,6 @@
             <div class="d-flex flex-row bd-highlight">
                 <div class="pr-2 pt-2 pb-2 bd-highlight align-self-center logo-div">
                     <h1 class="mr-4 mb-0"><a class="dpm-text-logo" (click)="goHome()">datapm</a></h1>
-                    <p class="text-light-gray"><a href="/docs/beta-notice" style="color: red">beta</a></p>
                 </div>
                 <div class="p-2 bd-highlight w-100">
                     <div class="input-group mt-1 search-box">
@@ -25,45 +24,38 @@
                                     <mat-spinner [diameter]="30" class="ml-3"></mat-spinner>
                                 </mat-option>
                                 <ng-container *ngIf="autoCompleteResult">
-                                    
-                                    <mat-option *ngFor="let option of autoCompleteResult.catalogs"
-                                        [value]="option.identifier.catalogSlug">
+                                    <mat-option
+                                        *ngFor="let option of autoCompleteResult.catalogs"
+                                        [value]="option.identifier.catalogSlug"
+                                    >
                                         <div class="d-flex">
                                             <div>
-                                                <app-avatar
-                                                    class="align-top user-img"
-                                                    [catalog]="option"
-                                                    [size]="40">
+                                                <app-avatar class="align-top user-img" [catalog]="option" [size]="40">
                                                 </app-avatar>
                                             </div>
-                                    
+
                                             <div class="autocomplete-contents">
                                                 <div class="autocomplete-title">
-                                                    <a href="javascript:void(0)">{{
-                                                        option.identifier.catalogSlug
-                                                        }}</a>
+                                                    <a href="javascript:void(0)">{{ option.identifier.catalogSlug }}</a>
                                                 </div>
-                                    
+
                                                 <div class="autocomplete-description">{{ option.description }}</div>
                                             </div>
                                         </div>
                                     </mat-option>
-                                    
 
-                                    <mat-option *ngFor="let option of autoCompleteResult.collections" [value]="'collection/' + option.identifier.collectionSlug">
+                                    <mat-option
+                                        *ngFor="let option of autoCompleteResult.collections"
+                                        [value]="'collection/' + option.identifier.collectionSlug"
+                                    >
                                         <div class="d-flex">
+                                            <div style="width: 40px; height: 40px">&nbsp;</div>
 
-                                            <div style="width:40px; height: 40px;">
-                                                &nbsp;
-                                            </div>
-                                   
                                             <div class="autocomplete-contents">
                                                 <div class="autocomplete-title">
-                                                    <a href="javascript:void(0)">collection/{{
-                                                        option.name
-                                                        }}</a>
+                                                    <a href="javascript:void(0)">collection/{{ option.name }}</a>
                                                 </div>
-                                    
+
                                                 <div class="autocomplete-description">{{ option.description }}</div>
                                             </div>
                                         </div>
@@ -109,11 +101,11 @@
         <div class="col-md-2 col-sm-12 header-right pr-0">
             <div class="d-flex flex-row bd-highlight">
                 <div class="bd-highlight main-menu-title d-flex align-items-end">
-                    <a href="/docs/publish-data/">Publish</a>
+                    <a (click)="publishClicked()">Publish</a>
                 </div>
                 <div class="bd-highlight ml-auto mr-2 avatar">
                     <app-avatar
-                        [user]="currentUser"
+                        [user]="currentUser.user"
                         [matMenuTriggerFor]="beforeMenu"
                         *ngIf="currentUser"
                         [size]="40"
@@ -144,13 +136,16 @@
     <div class="row pt-3 px-3">
         <div class="col-7 logo-div d-flex align-items-center">
             <h1 routerLink="/"><a class="dpm-text-logo" (click)="goHome()">datapm</a></h1>
-            <p class="text-light-gray ml-1"><a href="/docs/beta-notice" style="color: red">beta</a></p>
         </div>
 
         <div class="col-5 text-right d-flex justify-content-end align-items-center">
             <div class="d-flex flex-row bd-highlight d-flex justify-content-end">
                 <div class="bd-highlight mobile-person">
-                    <app-avatar [user]="currentUser" [matMenuTriggerFor]="beforeMenu" *ngIf="currentUser"></app-avatar>
+                    <app-avatar
+                        [user]="currentUser.user"
+                        [matMenuTriggerFor]="beforeMenu"
+                        *ngIf="currentUser"
+                    ></app-avatar>
                     <button
                         mat-fab
                         class="app-fab-button"

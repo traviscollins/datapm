@@ -23,9 +23,7 @@ describe("Autocomplete tests", async () => {
     let userBClient: ApolloClient<NormalizedCacheObject>;
     let userCClient: ApolloClient<NormalizedCacheObject>;
 
-    before(async () => {});
-
-    it("Create users A & B", async function () {
+    before(async () => {
         userAClient = await createUser(
             "AAuto",
             "ACompletely",
@@ -50,16 +48,16 @@ describe("Autocomplete tests", async () => {
             "autoPassward3!"
         );
 
-        expect(userAClient).to.exist;
-        expect(userBClient).to.exist;
-        expect(userCClient).to.exist;
+        expect(userAClient).to.not.equal(undefined);
+        expect(userBClient).to.not.equal(undefined);
+        expect(userCClient).to.not.equal(undefined);
     });
 
     it("Creates inital packages and collections for search queries", async function () {
-        let packageFileContents = loadPackageFileFromDisk("test/packageFiles/congressional-legislators.datapm.json");
+        const packageFileContents = loadPackageFileFromDisk("test/packageFiles/congressional-legislators.datapm.json");
         const packageFileString = JSON.stringify(packageFileContents);
 
-        let createCollection = await userAClient.mutate({
+        const createCollection = await userAClient.mutate({
             mutation: CreateCollectionDocument,
             variables: {
                 value: {
@@ -72,7 +70,7 @@ describe("Autocomplete tests", async () => {
 
         expect(createCollection.errors == null).equal(true);
 
-        let createCatalog = await userAClient.mutate({
+        const createCatalog = await userAClient.mutate({
             mutation: CreateCatalogDocument,
             variables: {
                 value: {
@@ -87,7 +85,7 @@ describe("Autocomplete tests", async () => {
 
         expect(createCatalog.errors == null).equal(true);
 
-        let createPackage = await userAClient.mutate({
+        const createPackage = await userAClient.mutate({
             mutation: CreatePackageDocument,
             variables: {
                 value: {
@@ -101,7 +99,7 @@ describe("Autocomplete tests", async () => {
 
         expect(createPackage.errors == null).equal(true);
 
-        let addVersionToPackage = await userAClient.mutate({
+        const addVersionToPackage = await userAClient.mutate({
             mutation: CreateVersionDocument,
             variables: {
                 identifier: {
@@ -118,105 +116,132 @@ describe("Autocomplete tests", async () => {
     });
 
     it("Should return packages by slug", async function () {
-        let response = await userAClient.query({
+        const response = await userAClient.query({
             query: AutoCompleteDocument,
             variables: {
                 startsWith: "package-au"
             }
         });
 
+        if (response.data?.autoComplete?.packages == null) {
+            throw new Error("No packages returned");
+        }
+
         expect(response.data?.autoComplete?.packages?.length).to.equal(1);
-        expect(response.data?.autoComplete?.packages![0].identifier.packageSlug).to.equal(
+        expect(response.data?.autoComplete?.packages[0].identifier.packageSlug).to.equal(
             "package-auto-complete-test-v1"
         );
     });
 
     it("Should return packages by reference", async function () {
-        let response = await userAClient.query({
+        const response = await userAClient.query({
             query: AutoCompleteDocument,
             variables: {
                 startsWith: "catalog-auto-complete-test-v1/package-auto-complete-test-v1"
             }
         });
 
+        if (response.data?.autoComplete?.packages == null) {
+            throw new Error("No packages returned");
+        }
+
         expect(response.data?.autoComplete?.packages?.length).to.equal(1);
-        expect(response.data?.autoComplete?.packages![0].identifier.packageSlug).to.equal(
+        expect(response.data?.autoComplete?.packages[0].identifier.packageSlug).to.equal(
             "package-auto-complete-test-v1"
         );
     });
 
     it("Should return packages by display name", async function () {
-        let response = await userAClient.query({
+        const response = await userAClient.query({
             query: AutoCompleteDocument,
             variables: {
                 startsWith: "Package Au"
             }
         });
+        if (response.data?.autoComplete?.packages == null) {
+            throw new Error("No packages returned");
+        }
 
         expect(response.data?.autoComplete?.packages?.length).to.equal(1);
-        expect(response.data?.autoComplete?.packages![0].displayName).to.equal(
+        expect(response.data?.autoComplete?.packages[0].displayName).to.equal(
             "Package Auto Complete Test v1 For Lucid"
         );
     });
 
     it("Should return catalogs by slug", async function () {
-        let response = await userAClient.query({
+        const response = await userAClient.query({
             query: AutoCompleteDocument,
             variables: {
                 startsWith: "catalog-au"
             }
         });
 
+        if (response.data?.autoComplete?.catalogs == null) {
+            throw new Error("No catalogs returned");
+        }
+
         expect(response.data?.autoComplete?.catalogs?.length).to.equal(1);
-        expect(response.data?.autoComplete?.catalogs![0].identifier.catalogSlug).to.equal(
+        expect(response.data?.autoComplete?.catalogs[0].identifier.catalogSlug).to.equal(
             "catalog-auto-complete-test-v1"
         );
     });
 
     it("Should return catalogs display name", async function () {
-        let response = await userAClient.query({
+        const response = await userAClient.query({
             query: AutoCompleteDocument,
             variables: {
                 startsWith: "Catalog Au"
             }
         });
 
+        if (response.data?.autoComplete?.catalogs == null) {
+            throw new Error("No catalogs returned");
+        }
+
         expect(response.data?.autoComplete?.catalogs?.length).to.equal(1);
-        expect(response.data?.autoComplete?.catalogs![0].displayName).to.equal(
+        expect(response.data?.autoComplete?.catalogs[0].displayName).to.equal(
             "Catalog Auto Complete Test v1 For Exercise"
         );
     });
 
     it("Should return collections by slug", async function () {
-        let response = await userAClient.query({
+        const response = await userAClient.query({
             query: AutoCompleteDocument,
             variables: {
                 startsWith: "collection-au"
             }
         });
 
+        if (response.data?.autoComplete?.collections == null) {
+            throw new Error("No collections returned");
+        }
+
         expect(response.data?.autoComplete?.collections?.length).to.equal(1);
-        expect(response.data?.autoComplete?.collections![0].identifier.collectionSlug).to.equal(
+        expect(response.data?.autoComplete?.collections[0].identifier.collectionSlug).to.equal(
             "collection-auto-complete-test-v1"
         );
     });
 
     it("Should return collections by display name", async function () {
-        let response = await userAClient.query({
+        const response = await userAClient.query({
             query: AutoCompleteDocument,
             variables: {
                 startsWith: "Collection Au"
             }
         });
 
+        if (response.data?.autoComplete?.collections == null) {
+            throw new Error("No collections returned");
+        }
+
         expect(response.data?.autoComplete?.collections?.length).to.equal(1);
-        expect(response.data?.autoComplete?.collections![0].name).to.equal(
+        expect(response.data?.autoComplete?.collections[0].name).to.equal(
             "Collection Auto Complete Test v1 For Training"
         );
     });
 
     it("Should return users by username", async function () {
-        let setUserPublic = await userAClient.mutate({
+        const setUserPublic = await userAClient.mutate({
             mutation: UpdateMeDocument,
             variables: {
                 value: {
@@ -225,38 +250,46 @@ describe("Autocomplete tests", async () => {
             }
         });
 
-        let response = await userAClient.query({
+        const response = await userAClient.query({
             query: AutoCompleteDocument,
             variables: {
                 startsWith: "userA"
             }
         });
 
+        if (response.data?.autoComplete?.users == null) {
+            throw new Error("No users returned");
+        }
+
         expect(response.data?.autoComplete?.users?.length).to.equal(1);
-        expect(response.data?.autoComplete?.users![0].username).to.equal("userA-auto-complete-test");
+        expect(response.data?.autoComplete?.users[0].username).to.equal("userA-auto-complete-test");
     });
 
     it("Should return users by first or last name", async function () {
-        let firstName = await userAClient.query({
+        const firstName = await userAClient.query({
             query: AutoCompleteDocument,
             variables: {
                 startsWith: "AAut"
             }
         });
-        let lastName = await userAClient.query({
+        const lastName = await userAClient.query({
             query: AutoCompleteDocument,
             variables: {
                 startsWith: "ACompl"
             }
         });
 
+        if (firstName.data?.autoComplete?.users == null) {
+            throw new Error("No users returned");
+        }
+
         expect(firstName.data?.autoComplete?.users?.length).to.equal(1);
-        expect(firstName.data?.autoComplete?.users![0].username).to.equal("userA-auto-complete-test");
+        expect(firstName.data?.autoComplete?.users[0].username).to.equal("userA-auto-complete-test");
         expect(lastName.data?.autoComplete?.users?.length).to.equal(1);
     });
 
     it("Should return users by email address", async function () {
-        let setEmailPublic = await userAClient.mutate({
+        const setEmailPublic = await userAClient.mutate({
             mutation: UpdateMeDocument,
             variables: {
                 value: {
@@ -265,7 +298,7 @@ describe("Autocomplete tests", async () => {
             }
         });
 
-        let response = await userAClient.query({
+        const response = await userAClient.query({
             query: AutoCompleteDocument,
             variables: {
                 startsWith: "Aemail"
@@ -276,7 +309,7 @@ describe("Autocomplete tests", async () => {
     });
 
     it("Should return users only if nameIsPublic", async function () {
-        let setUserNotPublic = await userAClient.mutate({
+        const setUserNotPublic = await userAClient.mutate({
             mutation: UpdateMeDocument,
             variables: {
                 value: {
@@ -285,7 +318,7 @@ describe("Autocomplete tests", async () => {
             }
         });
 
-        let response = await userAClient.query({
+        const response = await userAClient.query({
             query: AutoCompleteDocument,
             variables: {
                 startsWith: "AAut"
@@ -296,7 +329,7 @@ describe("Autocomplete tests", async () => {
     });
 
     it("Should return users only if emailAddressIsPublic", async function () {
-        let setEmailNotPublic = await userAClient.mutate({
+        const setEmailNotPublic = await userAClient.mutate({
             mutation: UpdateMeDocument,
             variables: {
                 value: {
@@ -305,7 +338,7 @@ describe("Autocomplete tests", async () => {
             }
         });
 
-        let after = await userAClient.query({
+        const after = await userAClient.query({
             query: AutoCompleteDocument,
             variables: {
                 startsWith: "Aemail"
@@ -316,7 +349,7 @@ describe("Autocomplete tests", async () => {
     });
 
     it("Should return empty for User B not public", async function () {
-        let catalogToNotPublic = await userAClient.mutate({
+        const catalogToNotPublic = await userAClient.mutate({
             mutation: UpdateCatalogDocument,
             variables: {
                 identifier: {
@@ -330,19 +363,19 @@ describe("Autocomplete tests", async () => {
 
         expect(catalogToNotPublic.errors).to.equal(undefined);
 
-        let packages = await userBClient.query({
+        const packages = await userBClient.query({
             query: AutoCompleteDocument,
             variables: {
                 startsWith: "package-auto-co"
             }
         });
-        let collections = await userBClient.query({
+        const collections = await userBClient.query({
             query: AutoCompleteDocument,
             variables: {
                 startsWith: "collection-auto-compl"
             }
         });
-        let catalogs = await userBClient.query({
+        const catalogs = await userBClient.query({
             query: AutoCompleteDocument,
             variables: {
                 startsWith: "catalog-auto-compl"
@@ -355,7 +388,7 @@ describe("Autocomplete tests", async () => {
     });
 
     it("Should return nodes for User C setting to public", async function () {
-        let collectionToPublic = await userAClient.mutate({
+        const collectionToPublic = await userAClient.mutate({
             mutation: UpdateCollectionDocument,
             variables: {
                 identifier: {
@@ -367,7 +400,7 @@ describe("Autocomplete tests", async () => {
             }
         });
 
-        let catalogToPublic = await userAClient.mutate({
+        const catalogToPublic = await userAClient.mutate({
             mutation: UpdateCatalogDocument,
             variables: {
                 identifier: {
@@ -379,7 +412,7 @@ describe("Autocomplete tests", async () => {
             }
         });
 
-        let packageToPublic = await userAClient.mutate({
+        const packageToPublic = await userAClient.mutate({
             mutation: UpdatePackageDocument,
             variables: {
                 identifier: {
@@ -392,21 +425,21 @@ describe("Autocomplete tests", async () => {
             }
         });
 
-        let packages = await userCClient.query({
+        const packages = await userCClient.query({
             query: AutoCompleteDocument,
             variables: {
                 startsWith: "package-auto-com"
             }
         });
 
-        let collections = await userCClient.query({
+        const collections = await userCClient.query({
             query: AutoCompleteDocument,
             variables: {
                 startsWith: "collection-auto-compl"
             }
         });
 
-        let catalogs = await userCClient.query({
+        const catalogs = await userCClient.query({
             query: AutoCompleteDocument,
             variables: {
                 startsWith: "catalog-auto-comple"
@@ -419,26 +452,26 @@ describe("Autocomplete tests", async () => {
     });
 
     it("Test i18n strings", async function () {
-        let strangeChars = await userAClient.query({
+        const strangeChars = await userAClient.query({
             query: AutoCompleteDocument,
             variables: {
                 startsWith: "שלום ירושלים"
             }
         });
 
-        let nonEnglish = await userAClient.query({
+        const nonEnglish = await userAClient.query({
             query: AutoCompleteDocument,
             variables: {
                 startsWith: "hayır ve göster"
             }
         });
 
-        expect(strangeChars.errors! == null).to.equal(true);
-        expect(nonEnglish.errors! == null).to.equal(true);
+        expect(strangeChars.errors == null).to.equal(true);
+        expect(nonEnglish.errors == null).to.equal(true);
     });
 
     it("Deletes Collection, Package, Catalog", async function () {
-        let deleteCollection = await userAClient.mutate({
+        const deleteCollection = await userAClient.mutate({
             mutation: DeleteCollectionDocument,
             variables: {
                 identifier: {
@@ -447,7 +480,7 @@ describe("Autocomplete tests", async () => {
             }
         });
 
-        let deletePackage = await userAClient.mutate({
+        const deletePackage = await userAClient.mutate({
             mutation: DeletePackageDocument,
             variables: {
                 identifier: {
@@ -457,7 +490,7 @@ describe("Autocomplete tests", async () => {
             }
         });
 
-        let deleteCatalog = await userAClient.mutate({
+        const deleteCatalog = await userAClient.mutate({
             mutation: DeleteCatalogDocument,
             variables: {
                 identifier: {
@@ -466,8 +499,8 @@ describe("Autocomplete tests", async () => {
             }
         });
 
-        expect(deleteCollection.errors! == null).to.equal(true);
-        expect(deletePackage.errors! == null).to.equal(true);
-        expect(deleteCatalog.errors! == null).to.equal(true);
+        expect(deleteCollection.errors == null).to.equal(true);
+        expect(deletePackage.errors == null).to.equal(true);
+        expect(deleteCatalog.errors == null).to.equal(true);
     });
 });

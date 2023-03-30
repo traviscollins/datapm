@@ -3,7 +3,7 @@ import { Title } from "@angular/platform-browser";
 import { ActivatedRoute, NavigationEnd, Router } from "@angular/router";
 import { PackageFile } from "datapm-lib";
 import { Subject } from "rxjs";
-import { OrderBy, PackageFollowersCountGQL, PackageIssuesGQL } from "src/generated/graphql";
+import { CurrentUser, OrderBy, PackageFollowersCountGQL, PackageIssuesGQL } from "src/generated/graphql";
 import { Follow, Package, Permission, User, UserGQL, GetFollowGQL, FollowIdentifierInput } from "src/generated/graphql";
 import { PackageService, PackageResponse } from "../../services/package.service";
 import { filter, takeUntil } from "rxjs/operators";
@@ -21,6 +21,7 @@ enum State {
     LOADING,
     LOADED,
     ERROR,
+    ERROR_PACKAGE_FILE_NOT_FOUND,
     ERROR_NOT_AUTHENTICATED,
     ERROR_NOT_AUTHORIZED,
     ERROR_NOT_FOUND
@@ -50,7 +51,7 @@ export class PackageComponent implements OnDestroy {
     ];
 
     public catalogUser: User;
-    public currentUser: User;
+    public currentUser: CurrentUser;
 
     public issuesCount: number;
     public followersCount: number;
@@ -80,21 +81,31 @@ export class PackageComponent implements OnDestroy {
                     this.catalogUser = null;
                 }
 
-                if (p.package == null && p.response != null) {
-                    if (p.response.errors.some((e) => e.message.includes("NOT_AUTHENTICATED")))
-                        this.state = State.ERROR_NOT_AUTHENTICATED;
-                    else if (p.response.errors.some((e) => e.message.includes("NOT_AUTHORIZED")))
-                        this.state = State.ERROR_NOT_AUTHORIZED;
-                    else if (p.response.errors.some((e) => e.message.includes("CATALOG_NOT_FOUND")))
-                        this.state = State.ERROR_NOT_FOUND;
-                    else if (p.response.errors.some((e) => e.message.includes("PACKAGE_NOT_FOUND")))
-                        this.state = State.ERROR_NOT_FOUND;
-                    else this.state = State.ERROR;
-                    return;
-                } else if (p.package == null && p.response == null) {
+                if (p.package == null && p.response == null) {
                     this.state = State.ERROR;
                     return;
                 }
+
+                if(p.response.errors) {
+                    if(p.response.errors.some((e) => e.message.includes("PACKAGE_FILE_NOT_FOUND"))) {
+                        this.state = State.ERROR_PACKAGE_FILE_NOT_FOUND;
+                    } else {
+                        if (p.response.errors.some((e) => e.message.includes("NOT_AUTHENTICATED")))
+                            this.state = State.ERROR_NOT_AUTHENTICATED;
+                        else if (p.response.errors.some((e) => e.message.includes("NOT_AUTHORIZED")))
+                            this.state = State.ERROR_NOT_AUTHORIZED;
+                        else if (p.response.errors.some((e) => e.message.includes("CATALOG_NOT_FOUND")))
+                            this.state = State.ERROR_NOT_FOUND;
+                        else if (p.response.errors.some((e) => e.message.includes("PACKAGE_NOT_FOUND")))
+                            this.state = State.ERROR_NOT_FOUND;
+                        else this.state = State.ERROR;
+                        return;
+                    }
+                } else {
+                    this.state = State.LOADED;
+                }
+
+
                 this.package = p.package;
                 this.loadPackageIssues();
                 this.loadPackageFollowersCount();
@@ -105,7 +116,6 @@ export class PackageComponent implements OnDestroy {
                     this.packageFile = null;
                 }
                 this.title.setTitle(`${this.package?.displayName} - datapm`);
-                this.state = State.LOADED;
                 this.userGql
                     .fetch({
                         username: this.package.identifier.catalogSlug
@@ -147,7 +157,7 @@ export class PackageComponent implements OnDestroy {
 
         this.updateFromUrl();
 
-        this.authenticationService.currentUser.pipe(takeUntil(this.unsubscribe$)).subscribe((user: User) => {
+        this.authenticationService.currentUser.pipe(takeUntil(this.unsubscribe$)).subscribe((user: CurrentUser) => {
             this.currentUser = user;
         });
     }

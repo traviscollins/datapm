@@ -20,7 +20,7 @@ import { TimeAgoPipe } from "./pipes/time-ago.pipe";
 import { ImageUploadModalComponent } from "./image-upload-modal/image-upload-modal.component";
 import { PackageItemComponent } from "./package-item/package-item.component";
 import { CollectionItemComponent } from "./collection-item/collection-item.component";
-import { CatalogItemComponent  } from "./catalog-item/catalog-item.component";
+import { CatalogItemComponent } from "./catalog-item/catalog-item.component";
 import { ForgotPasswordDialogComponent } from "./header/forgot-password-dialog/forgot-password-dialog.component";
 import { LoginDialogComponent } from "./header/login-dialog/login-dialog.component";
 import { SignUpDialogComponent } from "./header/sign-up-dialog/sign-up-dialog.component";
@@ -28,7 +28,10 @@ import { AvatarComponent } from "./avatar/avatar.component";
 import { UsernamePipe } from "./pipes/username.pipe";
 import { CoverComponent } from "./cover/cover.component";
 import { PercentPipe } from "./pipes/percent.pipe";
+import { SanitizeWithStylePipe } from "./pipes/sanitize-with-style.pipe";
 import { ValuesPipe } from "./pipes/values.pipe";
+import { KeysPipe } from "./pipes/keys.pipe";
+import { EntriesPipe } from "./pipes/entries.pipe";
 import { SortByPipe } from "./pipes/sort.pipe";
 import { InputComponent } from "./input/input.component";
 import { InputErrorPipe } from "./pipes/input-error.pipe";
@@ -42,6 +45,7 @@ import { UserDetailsHeaderComponent } from "./user-details/user-details-header/u
 import { UserCatalogsComponent } from "./user-details/user-catalogs/user-catalogs.component";
 import { DeleteCollectionComponent } from "./delete-collection/delete-collection.component";
 import { DeleteCatalogComponent } from "./delete-catalog/delete-catalog.component";
+import { DeleteGroupComponent } from "./delete-group/delete-group.component";
 import { FewPackagesAlertComponent } from "./user-details/few-packages-alert/few-packages-alert.component";
 import { UserCollectionsComponent } from "./user-details/user-collections/user-collections.component";
 import { UserPackagesComponent } from "./user-details/user-packages/user-packages.component";
@@ -74,6 +78,18 @@ import { HeroComponent } from "./hero/hero.component";
 import { SwiperModule } from "swiper/angular";
 import { FollowersComponent } from "./followers/followers.component";
 import { UpdateMethodPipe } from "../package/pipes/update-method.pipe";
+import { UserGroupsComponent } from "../shared/user-details/user-groups/user-groups.component";
+import { CreateGroupComponent } from "../shared/create-group/create-group.component";
+import { EditGroupComponent } from "../shared/edit-group/edit-group.component";
+import { UserItemComponent } from "../shared/user-item/user-item.component";
+import { PackageAutocompleteComponent } from "./package-autocomplete/package-autocomplete.component";
+import { CatalogAutocompleteComponent } from "./catalog-autocomplete/catalog-autocomplete.component";
+import { CollectionAutocompleteComponent } from "./collection-autocomplete/collection-autocomplete.component";
+import { UpdateModalComponent } from "./command-modal/update/update-modal.component";
+import { PackageModalComponent } from "./command-modal/package/package-modal.component";
+import { CommandModalComponent } from "./command-modal/command-modal.component";
+import { CreatePackageModalComponent } from "./command-modal/package/create-package-modal.component";
+import { FetchModalComponent } from "./command-modal/fetch/fetch-modal.component";
 
 @NgModule({
     declarations: [
@@ -82,6 +98,7 @@ import { UpdateMethodPipe } from "../package/pipes/update-method.pipe";
         TimeAgoPipe,
         ImageUploadModalComponent,
         PackageItemComponent,
+        UserItemComponent,
         CollectionItemComponent,
         CatalogItemComponent,
         ForgotPasswordDialogComponent,
@@ -91,7 +108,10 @@ import { UpdateMethodPipe } from "../package/pipes/update-method.pipe";
         UsernamePipe,
         CoverComponent,
         PercentPipe,
+        SanitizeWithStylePipe,
         ValuesPipe,
+        KeysPipe,
+        EntriesPipe,
         SortByPipe,
         InputComponent,
         InputErrorPipe,
@@ -101,15 +121,18 @@ import { UpdateMethodPipe } from "../package/pipes/update-method.pipe";
         EditCatalogComponent,
         CreateCollectionComponent,
         CreateCatalogComponent,
+        CreateGroupComponent,
         UserDetailsHeaderComponent,
         UserCatalogsComponent,
         DeleteCatalogComponent,
+        DeleteGroupComponent,
         DeleteCollectionComponent,
         FewPackagesAlertComponent,
         UserCollectionsComponent,
         UserPackagesComponent,
         EditAccountDialogComponent,
         EditPasswordDialogComponent,
+        EditGroupComponent,
         UserDetailsComponent,
         SimpleCreateComponent,
         DeletePackageComponent,
@@ -126,7 +149,16 @@ import { UpdateMethodPipe } from "../package/pipes/update-method.pipe";
         MovePackageComponent,
         HeroComponent,
         FollowersComponent,
-        UpdateMethodPipe
+        UserGroupsComponent,
+        UpdateMethodPipe,
+        PackageAutocompleteComponent,
+        CatalogAutocompleteComponent,
+        CollectionAutocompleteComponent,
+        UpdateModalComponent,
+        PackageModalComponent,
+        FetchModalComponent,
+        CreatePackageModalComponent,
+        CommandModalComponent
     ],
     imports: [
         CommonModule,
@@ -160,6 +192,7 @@ import { UpdateMethodPipe } from "../package/pipes/update-method.pipe";
         FooterComponent,
         TimeAgoPipe,
         PackageItemComponent,
+        UserItemComponent,
         CollectionItemComponent,
         CatalogItemComponent,
         ForgotPasswordDialogComponent,
@@ -170,17 +203,21 @@ import { UpdateMethodPipe } from "../package/pipes/update-method.pipe";
         CoverComponent,
         PercentPipe,
         ValuesPipe,
+        KeysPipe,
+        EntriesPipe,
         SortByPipe,
         TruncatePipe,
         InputComponent,
         InputErrorPipe,
         EditCollectionComponent,
+        EditGroupComponent,
         ConfirmationDialogComponent,
         EditCatalogComponent,
         CreateCollectionComponent,
         UserDetailsHeaderComponent,
         UserCatalogsComponent,
         DeleteCatalogComponent,
+        DeleteGroupComponent,
         DeleteCollectionComponent,
         FewPackagesAlertComponent,
         UserCollectionsComponent,
@@ -195,8 +232,12 @@ import { UpdateMethodPipe } from "../package/pipes/update-method.pipe";
         MarkdownEditorComponent,
         FollowDialogComponent,
         UserFollowingComponent,
+        UserGroupsComponent,
         HeroComponent,
-        FollowersComponent
+        FollowersComponent,
+        PackageAutocompleteComponent,
+        CatalogAutocompleteComponent,
+        CollectionAutocompleteComponent
     ],
     providers: [TimeAgoPipe, { provide: MAT_DIALOG_DATA, useValue: {} }]
 })

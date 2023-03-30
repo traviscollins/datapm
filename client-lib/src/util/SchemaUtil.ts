@@ -15,11 +15,15 @@ import {
     Parameter,
     DPMConfiguration,
     DPMPropertyTypes,
-    ValueTypeStatistics
+    ValueTypeStatistics,
+    Property,
+    ValueTypes,
+    ContentLabel
 } from "datapm-lib";
 import moment from "moment";
 import numeral from "numeral";
 import { PassThrough, Readable, Transform } from "stream";
+import { RecordStreamContextTransform } from "../transforms/RecordStreamContextTransform";
 import { Maybe } from "../util/Maybe";
 import { InspectionResults, StreamAndTransforms, StreamSetPreview, StreamSummary } from "../connector/Source";
 import { getConnectorDescriptionByType } from "../connector/ConnectorUtil";
@@ -27,8 +31,11 @@ import { obtainCredentialsConfiguration } from "./CredentialsUtil";
 import { BatchingTransform } from "../transforms/BatchingTransform";
 import { JobContext } from "../task/JobContext";
 import { obtainConnectionConfiguration } from "./ConnectionUtil";
-import { createUTCDateTimeFromString, isDate, isDateTime } from "./DateUtil";
+import { createUTCDateTimeFromString, isDate, isDateTime, _isDate } from "./DateUtil";
 import isNumber from "is-number";
+import { PackageIdentifierInput } from "../main";
+
+export const SAMPLE_RECORD_COUNT_MAX = 100;
 
 export enum DeconflictOptions {
     CAST_TO_BOOLEAN = "CAST_TO_BOOLEAN",
@@ -59,16 +66,27 @@ export interface RecordStreamEventContext {
 
 type InternalSourceInspectionResults = InspectionResults & {
     additionalConnectionConfiguration: DPMConfiguration;
+    credentialsIdentifier: string | undefined;
     additionalConfiguration: DPMConfiguration;
 };
 
 /** Given a source, run an inspection. This is useful to determine if anything has changed before
  * fetching data unnecessarily.
+ *
+ * @param source The source to inspect
+ * @param context The context to use for inspection
+ * @param configuration The configuration to use for inspection
+ * @param jobContext The job context to use for inspection
+ * @param defaults Whether to use default values for prompts when possible
+ * @param useSourceCredentialIdentifier Whether to use the source credential identifier, defined in the source object, as the default credentials
  */
 export async function inspectSourceConnection(
     jobContext: JobContext,
+    relatedPackage: PackageIdentifierInput | undefined,
     source: Source,
-    defaults: boolean | undefined
+    credentialsConfiguration: undefined | DPMConfiguration,
+    defaults: boolean | undefined,
+    useSourceCredentialIdentifier: boolean | undefined
 ): Promise<InternalSourceInspectionResults> {
     const connectorDescription = getConnectorDescriptionByType(source.type);
 
@@ -91,7 +109,14 @@ export async function inspectSourceConnection(
 
         jobContext.addAnswerListener(promptAnswerListener);
 
-        await obtainConnectionConfiguration(jobContext, connector, source.connectionConfiguration, undefined, defaults);
+        await obtainConnectionConfiguration(
+            jobContext,
+            relatedPackage,
+            connector,
+            source.connectionConfiguration,
+            undefined,
+            defaults
+        );
 
         jobContext.removeAnswerListener(promptAnswerListener);
     }
@@ -100,12 +125,11 @@ export async function inspectSourceConnection(
         source.connectionConfiguration
     );
 
-    let credentialsConfiguration = {};
-
-    if (source.credentialsIdentifier) {
+    if ((defaults || useSourceCredentialIdentifier) && source.credentialsIdentifier) {
         try {
             credentialsConfiguration =
                 (await jobContext.getRepositoryCredential(
+                    relatedPackage,
                     connector.getType(),
                     repositoryIdentifier,
                     source.credentialsIdentifier
@@ -115,8 +139,11 @@ export async function inspectSourceConnection(
         }
     }
 
+    if (credentialsConfiguration == null) credentialsConfiguration = {};
+
     const userCredentialsResponse = await obtainCredentialsConfiguration(
         jobContext,
+        relatedPackage,
         connector,
         source.connectionConfiguration,
         credentialsConfiguration,
@@ -146,6 +173,8 @@ export async function inspectSourceConnection(
         };
     };
 
+    jobContext.setCurrentStep(repositoryIdentifier + " Configuration and Streams");
+
     jobContext.addAnswerListener(promptAnswerListener);
 
     const inspectionResults = await sourceImplementation.inspectData(
@@ -160,6 +189,8 @@ export async function inspectSourceConnection(
     return {
         ...inspectionResults,
         additionalConnectionConfiguration,
+        credentialsIdentifier:
+            userCredentialsResponse !== false ? userCredentialsResponse.credentialsIdentifier : undefined,
         additionalConfiguration
     };
 }
@@ -374,26 +405,7 @@ function createStreamAndTransformPipeLine(
         lastTransform = lastTransform.pipe(streamOffSetTransform);
     }
 
-    const streamContextTransform = new Transform({
-        objectMode: true,
-        transform: function (chunks: RecordContext[], _encoding, callback) {
-            const chunksToSend: RecordStreamContext[] = [];
-
-            for (const chunk of chunks) {
-                const recordStreamContext: RecordStreamContext = {
-                    recordContext: chunk,
-                    sourceType: source.type,
-                    sourceSlug: source.slug,
-                    streamSetSlug: streamSetPreview.slug,
-                    streamSlug: streamSummary.name
-                };
-
-                chunksToSend.push(recordStreamContext);
-            }
-
-            callback(null, chunksToSend);
-        }
-    });
+    const streamContextTransform = new RecordStreamContextTransform(source, streamSetPreview, streamSummary);
 
     lastTransform = lastTransform.pipe(streamContextTransform);
 
@@ -437,11 +449,11 @@ function createStreamAndTransformPipeLine(
                             chunk.recordContext.record[title] as string,
                             deconflictOption
                         );
-                        if (deconflictedValue === null) {
+                        if (deconflictedValue.skipRecord === true) {
                             shouldSkip = true;
                             break;
                         } else {
-                            chunk.recordContext.record[title] = deconflictedValue;
+                            chunk.recordContext.record[title] = deconflictedValue.value;
                         }
                     }
                     if (!shouldSkip) {
@@ -546,6 +558,12 @@ export function getDeconflictChoices(valueTypes: DPMPropertyTypes[]): ParameterO
             DeconflictOptions.CAST_TO_DOUBLE,
             DeconflictOptions.ALL
         ],
+
+        "date-time,string": [
+            DeconflictOptions.CAST_TO_DATE_TIME,
+            DeconflictOptions.CAST_TO_STRING,
+            DeconflictOptions.ALL
+        ],
         // DATE
         "date,integer": [
             DeconflictOptions.CAST_TO_INTEGER,
@@ -569,7 +587,8 @@ export function getDeconflictChoices(valueTypes: DPMPropertyTypes[]): ParameterO
             DeconflictOptions.CAST_TO_NULL,
             DeconflictOptions.SKIP,
             DeconflictOptions.ALL
-        ]
+        ],
+        "array,object": [DeconflictOptions.CAST_TO_STRING]
     };
     let promptChoices = [];
     if (valueTypes.length > 2) {
@@ -624,13 +643,18 @@ export function updateSchemaWithDeconflictOptions(
                 [nonStringPropertyType]: Object(property.types)[nonStringPropertyType]
             };
         } else {
-            const preservedValueType = Object(property.types)[deconflictOption.toString()];
-
             const rule = deconflictRules[deconflictOption];
 
             if (rule == null) {
                 throw new Error("Could not find rule for deconflict option: " + deconflictOption);
             }
+
+            let preservedValueType: ValueTypeStatistics = Object(property.types)[rule];
+
+            if (preservedValueType == null) {
+                preservedValueType = {};
+            }
+
             property.types = {
                 [rule]: preservedValueType
             };
@@ -638,63 +662,449 @@ export function updateSchemaWithDeconflictOptions(
     }
 }
 
-export function resolveConflict(value: DPMRecordValue, deconflictOption: DeconflictOptions): DPMRecordValue {
-    if (value === "null") return value;
-    if (value == null) return value;
+/**
+ *
+ * @param existingSchemas Formerly created Schemas
+ * @param newSchemas Newly created Schemas
+ * @returns
+ */
+export function combineSchemas(existingSchemas: Schema[], newSchemas: Schema[]): Schema[] {
+    const returnValue: Schema[] = [];
 
-    if (deconflictOption === DeconflictOptions.ALL) return value;
+    for (const existingSchema of existingSchemas) {
+        const newSchema = newSchemas.find((s) => s.title === existingSchema.title);
+
+        if (newSchema) {
+            const combinedSchema = combineSchema(existingSchema, newSchema);
+
+            returnValue.push(combinedSchema);
+        } else {
+            returnValue.push(existingSchema);
+        }
+    }
+
+    for (const newSchema of newSchemas) {
+        const existingSchema = returnValue.find((s) => s.title === newSchema.title);
+
+        if (!existingSchema) {
+            returnValue.push(newSchema);
+        }
+    }
+
+    return returnValue;
+}
+
+export function combineSchema(existingSchema: Schema, newSchema: Schema): Schema {
+    const properties = combineProperties(existingSchema.properties, newSchema.properties);
+
+    // TODO Deep copy?
+    return {
+        title: existingSchema.title,
+        properties,
+        derivedFrom: lastThenFirst(existingSchema.derivedFrom, newSchema.derivedFrom),
+        derivedFromDescription: lastThenFirst(existingSchema.derivedFromDescription, newSchema.derivedFromDescription),
+        description: lastThenFirst(existingSchema.description, newSchema.description),
+        hidden: existingSchema.hidden || newSchema.hidden,
+        recordCountPrecision: newSchema.recordCountPrecision,
+        recordCount: newSchema.recordCount,
+        recordsInspectedCount: sumOrNull([existingSchema.recordsInspectedCount, newSchema.recordsInspectedCount]),
+        recordsNotPresent: sumOrNull([existingSchema.recordsNotPresent, newSchema.recordsNotPresent]),
+        sampleRecords: combineSampleRecords(existingSchema.sampleRecords, newSchema.sampleRecords),
+        unit: lastThenFirst(existingSchema.unit, newSchema.unit)
+    };
+}
+
+function combineSampleRecords(
+    existingRecords: { [key: string]: unknown }[] | undefined,
+    newRecords: { [key: string]: unknown }[] | undefined
+) {
+    if (existingRecords === undefined || newRecords === undefined) return lastThenFirst(existingRecords, newRecords);
+
+    const returnValue: { [key: string]: unknown }[] = [];
+
+    for (
+        let i = 0;
+        i < Math.max(existingRecords.length, newRecords.length) && returnValue.length < SAMPLE_RECORD_COUNT_MAX;
+        i++
+    ) {
+        const existingRecord = existingRecords[i];
+        const newRecord = newRecords[i];
+
+        if (existingRecord) returnValue.push(existingRecord);
+
+        if (newRecord) returnValue.push(newRecord);
+    }
+
+    return returnValue;
+}
+
+export function combineProperties(
+    existingProperties: Properties | undefined,
+    newProperties: Properties | undefined
+): Properties {
+    if (existingProperties === undefined || newProperties === undefined)
+        return lastThenFirst(existingProperties, newProperties) || {};
+
+    const properties: Properties = {};
+
+    for (const key of Object.keys(existingProperties)) {
+        const existingProperty = existingProperties[key];
+        const newProperty = newProperties[key];
+
+        if (newProperty) {
+            const combinedProperty = combineProperty(existingProperty, newProperty);
+            properties[key] = combinedProperty;
+        } else {
+            properties[key] = existingProperty;
+        }
+    }
+
+    for (const key of Object.keys(newProperties)) {
+        const existingProperty = properties[key];
+
+        if (!existingProperty) {
+            properties[key] = newProperties[key];
+        }
+    }
+
+    return properties;
+}
+
+export function combineProperty(existingProperty: Property, newProperty: Property): Property {
+    const combinedTypes = combineTypes(existingProperty.types, newProperty.types);
+
+    return {
+        title: existingProperty.title,
+        types: combinedTypes,
+        description: lastThenFirst(existingProperty.description, newProperty.description),
+        hidden: existingProperty.hidden || newProperty.hidden,
+        unit: lastThenFirst(existingProperty.unit, newProperty.unit),
+        firstSeen: oldestOrEither(existingProperty.firstSeen, newProperty.firstSeen),
+        lastSeen: newestOrEither(existingProperty.lastSeen, newProperty.lastSeen)
+    };
+}
+
+export function combineTypes(existingTypes: ValueTypes | undefined, newTypes: ValueTypes | undefined): ValueTypes {
+    if (existingTypes === undefined || newTypes === undefined) return lastThenFirst(existingTypes, newTypes) || {};
+
+    const returnValue: ValueTypes = {};
+
+    for (const [type, existingType] of Object.entries(existingTypes as ValueTypes)) {
+        const newType = (newTypes as ValueTypes)[type as DPMPropertyTypes];
+
+        if (newType) {
+            const combinedType = combineValueTypesStatistics(existingType, newType);
+
+            returnValue[type as DPMPropertyTypes] = combinedType;
+        } else {
+            returnValue[type as DPMPropertyTypes] = existingType;
+        }
+    }
+
+    for (const [type, newType] of Object.entries(newTypes)) {
+        const existingType = returnValue[type as DPMPropertyTypes];
+
+        if (!existingType) {
+            returnValue[type as DPMPropertyTypes] = newType;
+        }
+    }
+
+    return returnValue;
+}
+
+export function combineValueTypesStatistics(
+    existingType: ValueTypeStatistics | undefined,
+    newType: ValueTypeStatistics | undefined
+): ValueTypeStatistics | undefined {
+    if (existingType === undefined && newType === undefined) return undefined;
+
+    if (existingType !== undefined && newType === undefined) return existingType;
+
+    if (existingType === undefined && newType !== undefined) return newType;
+
+    const et = existingType as ValueTypeStatistics;
+    const nt = newType as ValueTypeStatistics;
+
+    const arrayMaxLength = maxOrNull([et.arrayMaxLength, nt.arrayMaxLength]);
+    const arrayMinLength = minOrNull([et.arrayMinLength, nt.arrayMinLength]);
+    const arrayTypes = combineTypes(et.arrayTypes, nt.arrayTypes);
+
+    const booleanFalseCount = sumOrNull([et.booleanFalseCount, nt.booleanFalseCount]);
+    const booleanTrueCount = sumOrNull([et.booleanTrueCount, nt.booleanTrueCount]);
+
+    const contentLabels = combineContentLabels(et.contentLabels, nt.contentLabels);
+    const dateMaxMillsecondsPrecision = maxOrNull([et.dateMaxMillsecondsPrecision, nt.dateMaxMillsecondsPrecision]);
+    const dateMaxValue = dateMaxOrNull([et.dateMaxValue, nt.dateMaxValue]);
+    const dateMinValue = dateMinOrNull([et.dateMinValue, nt.dateMinValue]);
+
+    const numberMaxPrecision = maxOrNull([et.numberMaxPrecision, nt.numberMaxPrecision]);
+    const numberMaxScale = maxOrNull([et.numberMaxScale, nt.numberMaxScale]);
+    const numberMaxValue = maxOrNull([et.numberMaxValue, nt.numberMaxValue]);
+    const numberMinValue = minOrNull([et.numberMinValue, nt.numberMinValue]);
+    const recordCount = sumOrNull([et.recordCount, nt.recordCount]);
+    const stringMaxLength = maxOrNull([et.stringMaxLength, nt.stringMaxLength]);
+    const stringMinLength = minOrNull([et.stringMinLength, et.stringMinLength]);
+    const stringOptions = combineStringOptions(et.stringOptions, nt.stringOptions);
+
+    const objectProperties = combineProperties(et.objectProperties, nt.objectProperties);
+
+    return {
+        arrayMaxLength,
+        arrayMinLength,
+        arrayTypes,
+        booleanFalseCount,
+        booleanTrueCount,
+        contentLabels,
+        dateMaxMillsecondsPrecision,
+        dateMaxValue,
+        dateMinValue,
+        numberMaxPrecision,
+        numberMaxScale,
+        numberMaxValue,
+        numberMinValue,
+        objectProperties,
+        recordCount,
+        stringMaxLength,
+        stringMinLength,
+        stringOptions
+    };
+}
+
+function combineContentLabels(
+    existingLabels: ContentLabel[] | undefined,
+    newLabels: ContentLabel[] | undefined
+): ContentLabel[] {
+    const returnValue: ContentLabel[] = [];
+
+    if (existingLabels) {
+        for (const existingLabel of existingLabels) {
+            const combinedLabel = combineContentLabel(
+                existingLabel,
+                newLabels?.find((l) => l.label === existingLabel.label)
+            );
+
+            returnValue.push(combinedLabel);
+        }
+    }
+
+    if (newLabels) {
+        for (const newLabel of newLabels) {
+            if (!returnValue.find((l) => l.label === newLabel.label)) returnValue.push(newLabel);
+        }
+    }
+
+    return returnValue;
+}
+
+function combineContentLabel(existingLabel: ContentLabel, newLabel: ContentLabel | undefined): ContentLabel {
+    if (newLabel === undefined) {
+        return existingLabel;
+    }
+
+    return {
+        hidden: existingLabel.hidden || newLabel.hidden,
+        label: existingLabel.label,
+        appliedByContentDetector: lastThenFirst(
+            existingLabel.appliedByContentDetector,
+            newLabel.appliedByContentDetector
+        ),
+        ocurrenceCount: sumOrNull([existingLabel.ocurrenceCount, newLabel.ocurrenceCount]),
+        valuesTestedCount: sumOrNull([existingLabel.valuesTestedCount, newLabel.valuesTestedCount])
+    };
+}
+
+function combineStringOptions(
+    existingOptions: { [key: string]: number } | undefined,
+    newOptions: { [key: string]: number } | undefined
+): { [key: string]: number } | undefined {
+    if (existingOptions === undefined || newOptions === undefined) {
+        return lastThenFirst(existingOptions, newOptions);
+    }
+    const returnValue: { [key: string]: number } = {};
+
+    for (const option of Object.keys(existingOptions)) {
+        const sum = sumOrNull([existingOptions[option], newOptions[option]]);
+
+        if (sum !== undefined) returnValue[option] = sum;
+    }
+
+    for (const option of Object.keys(newOptions)) {
+        if (returnValue[option] === undefined) returnValue[option] = newOptions[option];
+    }
+
+    return returnValue;
+}
+
+function oldestOrEither(a: Date | undefined, b: Date | undefined): Date | undefined {
+    if (a === undefined && b === undefined) return undefined;
+
+    if (a === undefined || b === undefined) return lastThenFirst(a, b);
+
+    if (a.getTime() < b.getTime()) return a;
+
+    return b;
+}
+
+function newestOrEither(a: Date | undefined, b: Date | undefined): Date | undefined {
+    if (a === undefined && b === undefined) return undefined;
+
+    if (a === undefined || b === undefined) return lastThenFirst(a, b);
+
+    if (b.getTime() < a.getTime()) return a;
+
+    return b;
+}
+
+function lastThenFirst<T>(a: T | undefined, b: T | undefined): T | undefined {
+    if (a === undefined && b === undefined) return undefined;
+
+    if (a === undefined && b !== undefined) return b;
+
+    return a;
+}
+
+function sumOrNull(values: (number | undefined)[]): number | undefined {
+    const numberValues = values.filter((v) => isNumber(v)) as number[];
+    return numberValues.reduce((p, c) => c + p, 0);
+}
+
+function maxOrNull(values: (number | undefined)[]): number | undefined {
+    const numberValues = values.filter((v) => isNumber(v)) as number[];
+
+    if (numberValues.length === 0) return undefined;
+
+    return Math.max(...numberValues);
+}
+
+function minOrNull(values: (number | undefined)[]): number | undefined {
+    const numberValues = values.filter((v) => isNumber(v)) as number[];
+
+    if (numberValues.length === 0) return undefined;
+
+    return Math.min(...numberValues);
+}
+
+function dateMaxOrNull(values: (Date | undefined)[]): Date | undefined {
+    const dateValues = values.filter((v) => v instanceof Date) as Date[];
+
+    if (dateValues.length === 0) return undefined;
+
+    return dateValues.reduce((p, c) => (p.getTime() > c.getTime() ? p : c), new Date(-8640000000000000));
+}
+
+function dateMinOrNull(values: (Date | undefined)[]): Date | undefined {
+    const dateValues = values.filter((v) => v instanceof Date) as Date[];
+
+    if (dateValues.length === 0) return undefined;
+
+    return dateValues.reduce((p, c) => (p.getTime() > c.getTime() ? p : c), new Date(8640000000000000));
+}
+
+/** return false if the entire record should be skipped */
+export function resolveConflict(
+    value: DPMRecordValue,
+    deconflictOption: DeconflictOptions
+): { skipRecord: boolean; value: DPMRecordValue } {
+    if (value === "null") return { skipRecord: false, value: null };
+    if (value == null) return { skipRecord: false, value: null };
+
+    if (deconflictOption === DeconflictOptions.ALL) return { skipRecord: false, value };
     const valueType = discoverValueType(value);
     const typeConvertedValue = convertValueByValueType(value, valueType);
     if (deconflictOption === DeconflictOptions.SKIP) {
-        if (valueType !== "string") return value; // Why is this here?
-        return null;
+        if (valueType !== "string") return { skipRecord: false, value };
+        return { skipRecord: true, value };
     }
     if (deconflictOption === DeconflictOptions.CAST_TO_NULL) {
-        if (valueType !== "string") return value;
-        return "null";
+        if (valueType !== "string") return { skipRecord: false, value };
+        return { skipRecord: false, value: null };
     }
     if (deconflictOption === DeconflictOptions.CAST_TO_BOOLEAN) {
-        if (valueType === "boolean") return typeConvertedValue;
-        if (valueType === "number" || valueType === "integer") return ((typeConvertedValue as number) > 0).toString();
+        if (valueType === "boolean") return { skipRecord: false, value: typeConvertedValue };
+        if (valueType === "number" || valueType === "integer")
+            return { skipRecord: false, value: ((typeConvertedValue as number) > 0).toString() };
+        if (valueType === "string") {
+            const convertedValue = convertValueByValueType(value, "boolean");
+            return { skipRecord: false, value: convertedValue };
+        }
     }
     if (deconflictOption === DeconflictOptions.CAST_TO_INTEGER) {
-        if (valueType === "integer") return value;
-        if (valueType === "number") return Math.round(typeConvertedValue as number);
-        if (valueType === "boolean") return typeConvertedValue ? "1" : "0";
+        if (valueType === "integer") return { skipRecord: false, value: typeConvertedValue };
+        if (valueType === "number") return { skipRecord: false, value: Math.round(typeConvertedValue as number) };
+        if (valueType === "boolean") return { skipRecord: false, value: typeConvertedValue ? "1" : "0" };
         if (valueType === "date") {
-            return (typeConvertedValue as Date).getTime().toString();
+            return { skipRecord: false, value: (typeConvertedValue as Date).getTime().toString() };
+        }
+        if (valueType === "string") {
+            const convertedValue = convertValueByValueType(value, "integer");
+            return { skipRecord: false, value: convertedValue };
         }
     }
     if (deconflictOption === DeconflictOptions.CAST_TO_DOUBLE) {
-        if (valueType === "number") return value;
-        if (valueType === "boolean") return typeConvertedValue ? "1.0" : "0.0";
-        if (valueType === "integer") return `${typeConvertedValue}.0`;
+        if (valueType === "number") return { skipRecord: false, value };
+        if (valueType === "boolean") return { skipRecord: false, value: typeConvertedValue ? "1.0" : "0.0" };
+        if (valueType === "integer") return { skipRecord: false, value: `${typeConvertedValue}.0` };
+        if (valueType === "string") {
+            const convertedValue = convertValueByValueType(value, "number");
+            return { skipRecord: false, value: convertedValue };
+        }
     }
     if (deconflictOption === DeconflictOptions.CAST_TO_DATE) {
-        if (valueType === "date-time" || valueType === "date") return value;
+        if (valueType === "date-time" || valueType === "date") return { skipRecord: false, value: typeConvertedValue };
         if (valueType === "integer")
-            return moment(new Date(typeConvertedValue as number))
-                .utc()
-                .format("YYYY-MM-DD");
+            return {
+                skipRecord: false,
+                value: moment(new Date(typeConvertedValue as number))
+                    .utc()
+                    .toDate()
+            };
+
+        if (valueType === "string") {
+            const stringTypeConveredValue: Date | null = convertValueByValueType(value, "date") as Date | null;
+
+            if (stringTypeConveredValue == null) return { skipRecord: false, value: null };
+
+            const momentValue = moment(stringTypeConveredValue as Date);
+
+            if (!momentValue.isValid()) return { skipRecord: false, value: null };
+
+            return { skipRecord: false, value: momentValue.utc().toDate() };
+        }
     }
     if (deconflictOption === DeconflictOptions.CAST_TO_DATE_TIME) {
-        if (valueType === "date-time" || valueType === "date") return value;
+        if (valueType === "date-time" || valueType === "date") return { skipRecord: false, value: typeConvertedValue };
         if (valueType === "integer")
-            return moment(new Date(typeConvertedValue as number))
-                .utc()
-                .format("YYYY-MM-DD HH:mm:ssZ");
+            return {
+                skipRecord: false,
+                value: moment(new Date(typeConvertedValue as number))
+                    .utc()
+                    .toDate()
+            };
+
+        if (valueType === "string") {
+            const stringTypeConveredValue: Date | null = convertValueByValueType(value, "date") as Date | null;
+
+            if (stringTypeConveredValue == null) return { skipRecord: false, value: null };
+
+            const momentValue = moment(stringTypeConveredValue as Date);
+
+            if (!momentValue.isValid()) return { skipRecord: false, value: null };
+
+            return { skipRecord: false, value: momentValue.utc().toDate() };
+        }
     }
     if (deconflictOption === DeconflictOptions.CAST_TO_STRING) {
-        if (valueType === "null") return "null";
-        if (valueType === "boolean") return typeConvertedValue ? "true" : "false";
+        if (valueType === "string") return { skipRecord: false, value };
+        if (valueType === "null") return { skipRecord: false, value: null };
+        if (valueType === "boolean") return { skipRecord: false, value: typeConvertedValue ? "true" : "false" };
         if (isDate(typeConvertedValue as string)) {
-            return (typeConvertedValue as Date).toISOString();
+            return { skipRecord: false, value: (typeConvertedValue as Date).toISOString() };
         }
-        if (valueType === "object") return JSON.stringify(typeConvertedValue);
-        if (valueType === "array") return JSON.stringify(typeConvertedValue);
-        return value.toString();
+        if (valueType === "object") return { skipRecord: false, value: JSON.stringify(typeConvertedValue) };
+        if (valueType === "array") return { skipRecord: false, value: JSON.stringify(typeConvertedValue) };
+        return { skipRecord: false, value: value.toString() };
     }
-    return null;
+    return { skipRecord: false, value: null };
 }
 
 /** Prints only the record count and property info for the schema.
@@ -772,15 +1182,28 @@ export function printSchema(jobContext: JobContext, schema: Schema): void {
 export function discoverValueType(value: DPMRecordValue): DPMPropertyTypes {
     if (value === null) return "null";
 
-    if (typeof value === "bigint") return "integer";
+    const valueTypeOf = typeof value;
 
-    if (typeof value === "string") return discoverValueTypeFromString(value as string);
+    if (valueTypeOf === "bigint") return "integer";
+
+    if (valueTypeOf === "string") return "string";
 
     if (Array.isArray(value)) return "array";
 
-    if (value instanceof Date) return "date-time";
+    if (value instanceof Date) {
+        if (
+            value.getUTCHours() === 0 &&
+            value.getUTCMinutes() === 0 &&
+            value.getUTCSeconds() === 0 &&
+            value.getUTCMilliseconds() === 0
+        ) {
+            return "date";
+        }
 
-    if (typeof value === "number") {
+        return "date-time";
+    }
+
+    if (valueTypeOf === "number") {
         const strValue = value.toString();
         if (strValue.indexOf(".") === -1) {
             return "integer";
@@ -788,15 +1211,19 @@ export function discoverValueType(value: DPMRecordValue): DPMPropertyTypes {
         return "number";
     }
 
-    if (typeof value === "undefined") {
+    if (valueTypeOf === "undefined") {
         return "null";
     }
 
-    if (typeof value === "object") {
+    if (valueTypeOf === "object") {
         return "object";
     }
 
-    return typeof value as "string"; // This is just a forcing of types
+    if (valueTypeOf === "boolean") {
+        return "boolean";
+    }
+
+    throw new Error("Unable to detect type for value typof " + valueTypeOf);
 }
 
 export function discoverValueTypeFromString(value: string): DPMPropertyTypes {
@@ -833,8 +1260,12 @@ export function discoverValueTypeFromString(value: string): DPMPropertyTypes {
 }
 
 /** Given a value, convert it to a specific value type. Example: boolean from string */
-export function convertValueByValueType(value: DPMRecordValue, valueType: DPMPropertyTypes): DPMRecordValue {
+export function convertValueByValueType(
+    value: DPMRecordValue,
+    valueType: DPMPropertyTypes
+): DPMRecordValue | DPMRecordValue[] {
     if (value == null) return null;
+    if (value === "null") return null;
 
     if (valueType === "null") {
         return null;
@@ -860,6 +1291,7 @@ export function convertValueByValueType(value: DPMRecordValue, valueType: DPMPro
         if (typeof value === "number") return Math.round(value);
         if (typeof value === "string") return Math.round(+value);
     } else if (valueType === "date") {
+        if (value instanceof Date) return value;
         try {
             return createUTCDateTimeFromString(value as string); // TODO - this is probably not right for all situations
         } catch (err) {
@@ -871,6 +1303,10 @@ export function convertValueByValueType(value: DPMRecordValue, valueType: DPMPro
         } catch (err) {
             return value;
         }
+    } else if (valueType === "object") {
+        return value;
+    } else if (valueType === "array") {
+        return value;
     }
 
     // TODO recursively handle arrays and object

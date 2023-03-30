@@ -1,4 +1,5 @@
 import { comparePackages, Difference } from "datapm-lib";
+import { GraphQLResolveInfo } from "graphql";
 import { SemVer } from "semver";
 import { Context } from "../context";
 import { PackageEntity } from "../entity/PackageEntity";
@@ -7,12 +8,11 @@ import { VersionEntity } from "../entity/VersionEntity";
 import { PackageDifferenceType, PackageIdentifierInput, VersionIdentifierInput } from "../generated/graphql";
 import { PackageRepository } from "../repository/PackageRepository";
 import { VersionComparisonRepository, saveVersionComparison } from "../repository/VersionComparisonRepository";
-import { VersionDifferenceRepository } from "../repository/VersionDifferenceRepository";
 import { VersionRepository } from "../repository/VersionRepository";
 import { PackageFileStorageService } from "../storage/packages/package-file-storage-service";
 
 export const packageVersionsDiffs = async (
-    _0: any,
+    _0: unknown,
     {
         packageIdentifier,
         offset,
@@ -23,8 +23,8 @@ export const packageVersionsDiffs = async (
         limit: number;
     },
     context: Context,
-    info: any
-) => {
+    info: GraphQLResolveInfo
+): Promise<VersionDifference[]> => {
     const packageEntity = await context.connection
         .getCustomRepository(PackageRepository)
         .findOrFail({ identifier: packageIdentifier });
@@ -41,7 +41,7 @@ export const packageVersionsDiffs = async (
         comparingPairs.push({ newVersionEntity: versions[i], oldVersionEntity: versions[i + 1] });
     }
 
-    return comparingPairs.map(({ newVersionEntity, oldVersionEntity }) =>
+    return comparingPairs.asyncMap(({ newVersionEntity, oldVersionEntity }) =>
         packageVersionsDiffFromVersionEntities(
             _0,
             { packageIdentifier, packageEntity, newVersionEntity, oldVersionEntity },
@@ -51,7 +51,7 @@ export const packageVersionsDiffs = async (
 };
 
 export const packageVersionsDiff = async (
-    _0: any,
+    _0: unknown,
     {
         newVersion,
         oldVersion
@@ -60,9 +60,9 @@ export const packageVersionsDiff = async (
         oldVersion: VersionIdentifierInput;
     },
     context: Context,
-    info: any
-) => {
-    if (newVersion.catalogSlug != oldVersion.catalogSlug || newVersion.packageSlug != oldVersion.packageSlug) {
+    info: GraphQLResolveInfo
+): Promise<VersionDifference> => {
+    if (newVersion.catalogSlug !== oldVersion.catalogSlug || newVersion.packageSlug !== oldVersion.packageSlug) {
         throw new Error("DIFFERENT_VERSIONS_PACKAGES");
     }
 
@@ -107,7 +107,7 @@ export const packageVersionsDiff = async (
 };
 
 export const packageVersionsDiffFromVersionEntities = async (
-    _0: any,
+    _0: unknown,
     {
         packageIdentifier,
         packageEntity,
@@ -120,7 +120,7 @@ export const packageVersionsDiffFromVersionEntities = async (
         oldVersionEntity: VersionEntity;
     },
     context: Context
-) => {
+): Promise<VersionDifference> => {
     const comparisonRepository = context.connection.getCustomRepository(VersionComparisonRepository);
     const relations = ["newVersion", "oldVersion", "differences"];
     const comparisonEntity = await comparisonRepository.getComparisonByVersionIds(
@@ -194,12 +194,29 @@ function serializeSemanticVersion(version: VersionIdentifierInput): string {
     return `${version.versionMajor}.${version.versionMinor}.${version.versionPatch}`;
 }
 
+type Version = {
+    versionMajor: number;
+    versionMinor: number;
+    versionPatch: number;
+};
+
+type VersionValues = {
+    type: PackageDifferenceType;
+    pointer: string;
+};
+
+type VersionDifference = {
+    newVersion: Version;
+    oldVersion: Version;
+    differences: VersionValues[];
+};
+
 export async function createVersionComparison(
     newVersionId: number,
     oldVersionId: number,
     differences: Difference[],
     context: Context
-) {
+): Promise<VersionDifference> {
     const result = await context.connection.manager.nestedTransaction(async (transaction) => {
         return saveVersionComparison(transaction, newVersionId, oldVersionId, differences);
     });
@@ -208,7 +225,7 @@ export async function createVersionComparison(
     return {
         newVersion: versionEntityToVersionValuesObject(createdComparisonEntity.newVersion),
         oldVersion: versionEntityToVersionValuesObject(createdComparisonEntity.oldVersion),
-        differences: versionDifferenceEntityToVersionValuesObject(result.differencesEntities)
+        differences: versionDifferenceEntityToVersionValuesObject(result.differencesEntitities)
     };
 }
 

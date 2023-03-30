@@ -9,17 +9,17 @@ export interface Task {
 
     setMessage(message?: string): void;
 
+    getLastMessage(): string | undefined;
+
     /** After calling end, setStatus should never be called. */
     end(status: TaskStatus, message?: string, error?: Error): Promise<void>;
-
-    /** Removes the spinner */
-    clear(): void;
 
     // addSubTask(message: string): Task;
 }
 
 export interface JobResult<T> {
     exitCode: number;
+    errorMessage?: string;
     result?: T | undefined;
 }
 
@@ -36,10 +36,18 @@ export abstract class Job<T> {
 
     async execute(): Promise<JobResult<T>> {
         this.state = "RUNNING";
-        const taskResult = await this._execute();
 
-        this.updateState(taskResult);
-        return taskResult;
+        try {
+            const taskResult = await this._execute();
+
+            this.updateState(taskResult);
+            return taskResult;
+        } catch (e) {
+            return {
+                exitCode: 1,
+                errorMessage: e.message
+            };
+        }
     }
 
     private updateState(taskResult: JobResult<T>): void {

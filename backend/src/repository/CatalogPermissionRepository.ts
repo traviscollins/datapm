@@ -28,7 +28,7 @@ async function getUserCatalogPermissionOrFail({
 }): Promise<UserCatalogPermissionEntity> {
     const ALIAS = "catalog";
 
-    let query = manager
+    const query = manager
         .getRepository(UserCatalogPermissionEntity)
         .createQueryBuilder(ALIAS)
         .where({ userId: userId, catalogId: catalogId, permission: permission })
@@ -67,7 +67,7 @@ export async function grantUserCatalogPermission({
         }
 
         // Check that the user does not already have this permission.
-        let returnValue = await getUserCatalogPermission({
+        const returnValue = await getUserCatalogPermission({
             userId: user.id,
             catalogId: catalog.id,
             manager: transaction
@@ -110,7 +110,7 @@ async function getUserCatalogPermission({
 }): Promise<UserCatalogPermissionEntity | null> {
     const ALIAS = "catalog";
 
-    let query = manager
+    const query = manager
         .getRepository(UserCatalogPermissionEntity)
         .createQueryBuilder(ALIAS)
         .where({ userId: userId, catalogId: catalogId })
@@ -153,8 +153,8 @@ export class UserCatalogPermissionRepository extends Repository<UserCatalogPermi
         catalogId: number;
         userId: number;
         relations?: string[];
-    }) {
-        const ALIAS = "userPackagePermission";
+    }): Promise<UserCatalogPermissionEntity | undefined> {
+        const ALIAS = "userCatalogPermissions";
         return this.manager
             .getRepository(UserCatalogPermissionEntity)
             .createQueryBuilder(ALIAS)
@@ -208,7 +208,7 @@ export class UserCatalogPermissionRepository extends Repository<UserCatalogPermi
         value: SetUserCatalogPermissionInput;
         relations?: string[];
     }): Promise<void> {
-        await this.manager.nestedTransaction(async (transaction) => {
+        await this.manager.nestedTransaction<void>(async (transaction) => {
             const user = await transaction
                 .getCustomRepository(UserRepository)
                 .getUserByUsernameOrEmailAddress(value.usernameOrEmailAddress);
@@ -221,23 +221,23 @@ export class UserCatalogPermissionRepository extends Repository<UserCatalogPermi
                 .getCustomRepository(CatalogRepository)
                 .findCatalogBySlugOrFail(identifier.catalogSlug);
 
-            if (catalogEntity.creatorId == user.id) {
+            if (catalogEntity.creatorId === user.id) {
                 throw new Error("CANNOT_CHANGE_CATALOG_CREATOR_PERMISSIONS");
             }
 
             const permissions = await this.findByUserAndCatalogId(user.id, catalogEntity.id);
 
             // If permission input is not empty
-            if (value.permission!.length > 0) {
+            if (value.permission.length > 0) {
                 // If user does not exist in catalog permissions, it creates new record
-                if (permissions == undefined) {
+                if (permissions === undefined) {
                     try {
                         const catalogPermissionEntry = transaction.create(UserCatalogPermissionEntity);
                         catalogPermissionEntry.userId = user.id;
                         catalogPermissionEntry.catalogId = catalogEntity.id;
                         catalogPermissionEntry.permissions = value.permission;
-                        catalogPermissionEntry.packagePermission = value.packagePermission;
-                        return await transaction.save(catalogPermissionEntry);
+                        catalogPermissionEntry.packagePermissions = value.packagePermissions;
+                        await transaction.save(catalogPermissionEntry);
                     } catch (e) {
                         console.log(e);
                     }
@@ -246,10 +246,10 @@ export class UserCatalogPermissionRepository extends Repository<UserCatalogPermi
                 // If user does exists in catalog permissions, it updates the record found
                 else {
                     try {
-                        return await transaction
+                        await transaction
                             .createQueryBuilder()
                             .update(UserCatalogPermissionEntity)
-                            .set({ permissions: value.permission, packagePermission: value.packagePermission })
+                            .set({ permissions: value.permission, packagePermissions: value.packagePermissions })
                             .where({ catalogId: catalogEntity.id, userId: user.id })
                             .execute();
                     } catch (e) {
@@ -260,9 +260,9 @@ export class UserCatalogPermissionRepository extends Repository<UserCatalogPermi
             // If the permissions input is empty, it will delete the row in catalog permissions
             else {
                 // If the permissions row exists in the table delete it
-                if (permissions != undefined) {
+                if (permissions != null) {
                     try {
-                        return await transaction
+                        await transaction
                             .createQueryBuilder()
                             .delete()
                             .from(UserCatalogPermissionEntity)
@@ -273,7 +273,6 @@ export class UserCatalogPermissionRepository extends Repository<UserCatalogPermi
                     }
                 }
             }
-            return;
         });
     }
 
@@ -290,7 +289,7 @@ export class UserCatalogPermissionRepository extends Repository<UserCatalogPermi
                 .getCustomRepository(CatalogRepository)
                 .findCatalogBySlugOrFail(identifier.catalogSlug);
 
-            if (catalogEntity.creatorId == user.id) {
+            if (catalogEntity.creatorId === user.id) {
                 throw new Error("CANNOT_REMOVE_CREATOR_PERMISSIONS");
             }
 

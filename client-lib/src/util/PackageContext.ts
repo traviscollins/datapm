@@ -28,7 +28,7 @@ export interface PackageFileWithContext {
     permitsSaving: boolean;
     hasPermissionToSave: boolean;
     cantSaveReason: CantSaveReasons | false;
-    packageFileUrl: string;
+    packageReference: string;
     readmeFileUrl: string | undefined;
     licenseFileUrl: string | undefined;
 
@@ -67,7 +67,7 @@ export class RegistryPackageFileContext implements PackageFileWithContext {
         return false;
     }
 
-    get packageFileUrl(): string {
+    get packageReference(): string {
         return (
             this.packageObject.identifier.registryURL +
             "/" +
@@ -108,6 +108,8 @@ export class RegistryPackageFileContext implements PackageFileWithContext {
     }
 
     async save(packageFile: PackageFile): Promise<void> {
+        this.packageFile = packageFile;
+
         const publishMethod = packageFile.registries?.find(
             (r) =>
                 r.url.toLowerCase() === this.registryUrl.toLowerCase() &&
@@ -127,7 +129,7 @@ export class RegistryPackageFileContext implements PackageFileWithContext {
             }
         ];
 
-        await publishPackageFile(this.jobContext, packageFile, targetRegistries);
+        await publishPackageFile(this.jobContext, this, targetRegistries);
     }
 }
 
@@ -147,7 +149,7 @@ export class HttpPackageFileContext implements PackageFileWithContext {
         throw new Error("HttpPackageFileContext does not support saving");
     }
 
-    get packageFileUrl(): string {
+    get packageReference(): string {
         return this.url;
     }
 

@@ -5,118 +5,77 @@ import {
     Schema,
     ValueTypeStatistics,
     DPMPropertyTypes,
-    Property
+    Property,
+    ValueTypes,
+    RecordStreamContext
 } from "datapm-lib";
 import { Transform, TransformCallback, TransformOptions } from "stream";
 import { ContentLabelDetector } from "../content-detector/ContentLabelDetector";
-import { convertValueByValueType, discoverValueType } from "../util/SchemaUtil";
-
-const SAMPLE_RECORD_COUNT_MAX = 100;
+import { convertValueByValueType, discoverValueType, SAMPLE_RECORD_COUNT_MAX } from "../util/SchemaUtil";
 
 export class StatsTransform extends Transform {
     recordCount = 0;
     recordsInspected = 0;
     schemas: Record<string, Schema>;
-    contentLabelDetector: ContentLabelDetector;
+    contentLabelDetectorsBySchema: Record<string, ContentLabelDetector>;
 
     progressCallBack: (recordCount: number, recordsInspectedCount: number) => void;
 
     constructor(
         progressCallback: (recordCount: number, recordsInspectedCount: number) => void,
         schemas: Record<string, Schema>,
-        contentLabelDetector: ContentLabelDetector,
         opts?: TransformOptions
     ) {
         super(opts);
         this.schemas = schemas;
         this.progressCallBack = progressCallback;
-        this.contentLabelDetector = contentLabelDetector;
+        this.contentLabelDetectorsBySchema = {};
     }
 
     async _transform(
-        recordContexts: RecordContext[],
+        recordStreamContexts: RecordStreamContext[],
         _encoding: BufferEncoding,
         callback: TransformCallback
     ): Promise<void> {
-        this.recordCount += recordContexts.length;
+        this.recordCount += recordStreamContexts.length;
 
-        for (const recordContext of recordContexts) {
+        for (const recordStreamContext of recordStreamContexts) {
+            const recordContext = recordStreamContext.recordContext;
             if (!Object.keys(this.schemas).includes(recordContext.schemaSlug)) {
                 this.schemas[recordContext.schemaSlug] = {
                     title: recordContext.schemaSlug,
                     properties: {},
                     recordsInspectedCount: 0,
                     recordCount: 0,
-                    sampleRecords: []
+                    sampleRecords: [],
+                    updateMethods: []
                 };
             }
 
             const schema = this.schemas[recordContext.schemaSlug] as Schema;
+
+            if (schema.updateMethods == null) schema.updateMethods = [];
+
+            if (!schema.updateMethods.includes(recordStreamContext.updateMethod)) {
+                schema.updateMethods.push(recordStreamContext.updateMethod);
+            }
 
             // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
             schema.recordCount!++;
 
             this.progressCallBack(this.recordCount, this.recordsInspected);
 
-            const typeConvertedRecord: DPMRecord = {};
+            const properties = schema.properties;
 
-            Array.from(Object.keys(recordContext.record)).forEach((title: string) => {
-                // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-                let property = schema.properties![title];
+            const record = recordContext.record;
 
-                if (property == null) {
-                    const propertySchema: Property = {
-                        title,
-                        types: {}
-                    };
-                    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-                    schema.properties![title] = propertySchema;
-                    property = propertySchema;
-                }
+            if (this.contentLabelDetectorsBySchema[recordContext.schemaSlug] === undefined) {
+                this.contentLabelDetectorsBySchema[recordContext.schemaSlug] = new ContentLabelDetector();
+            }
 
-                const value = recordContext.record[title];
+            const contentLabelDetector = this.contentLabelDetectorsBySchema[recordContext.schemaSlug];
 
-                let valueType: DPMPropertyTypes = discoverValueType(value);
-                let typeConvertedValue: DPMRecordValue;
-                try {
-                    typeConvertedValue = convertValueByValueType(value, valueType);
-                } catch (error) {
-                    console.log(JSON.stringify(recordContext, null, 2));
-                    throw error;
-                }
-
-                if (property.types == null) return;
-
-                // If an integer is detected, and there exists
-                // already numbers. Then count this as a number (and not an integer)
-                if (valueType === "integer") {
-                    if (property.types.number != null) {
-                        valueType = "number" as DPMPropertyTypes;
-                    }
-
-                    // if a number is detected, and there exists
-                    // already integers. Then convert those prior integer valueTypes
-                    // to number.
-                } else if (valueType === "number") {
-                    if (property.types.integer != null) {
-                        property.types.number = property.types.integer;
-                        delete property.types.integer;
-                    }
-                }
-
-                typeConvertedRecord[title] = typeConvertedValue;
-
-                let valueTypeStats = property.types[valueType];
-                if (!valueTypeStats) {
-                    property.types[valueType] = valueTypeStats = {
-                        recordCount: 0,
-                        stringOptions: {}
-                    };
-                }
-                updateValueTypeStats(typeConvertedValue, valueType as DPMPropertyTypes, valueTypeStats);
-
-                this.contentLabelDetector.inspectValue(recordContext.schemaSlug, title, typeConvertedValue);
-            });
+            const typeConvertedRecord: DPMRecord = inspectObject(properties, record, contentLabelDetector);
 
             if (schema.sampleRecords == null) schema.sampleRecords = [];
 
@@ -125,15 +84,20 @@ export class StatsTransform extends Transform {
             this.recordsInspected++;
         }
 
-        callback(null, recordContexts);
+        callback(null, recordStreamContexts);
     }
 
     _final(callback: (error?: Error | null) => void): void {
-        this.contentLabelDetector.applyLabelsToSchemas(Object.values(this.schemas));
+        for (const schema of Object.values(this.schemas)) {
+            const contentLabelDetector = this.contentLabelDetectorsBySchema[schema.title];
+            contentLabelDetector.applyLabelsToProperties(schema.properties);
+        }
+
         callback(null);
     }
 }
 
+/** Updates the valueType object provided with the attributes of the value provided */
 function updateValueTypeStats(value: DPMRecordValue, valueType: DPMPropertyTypes, valueTypeStats: ValueTypeStatistics) {
     valueTypeStats.recordCount = (valueTypeStats.recordCount || 0) + 1;
 
@@ -199,7 +163,7 @@ function updateValueTypeStats(value: DPMRecordValue, valueType: DPMPropertyTypes
             if (valueTypeStats.dateMaxValue == null || valueTypeStats.dateMaxValue?.getTime() < dateValue.getTime())
                 valueTypeStats.dateMaxValue = dateValue;
 
-            if (valueTypeStats.dateMinValue == null || valueTypeStats.dateMinValue.getTime() < dateValue.getTime())
+            if (valueTypeStats.dateMinValue == null || valueTypeStats.dateMinValue.getTime() > dateValue.getTime())
                 valueTypeStats.dateMinValue = dateValue;
 
             let millsecondsString = dateValue.getMilliseconds().toString();
@@ -221,11 +185,21 @@ function updateValueTypeStats(value: DPMRecordValue, valueType: DPMPropertyTypes
                 millsecondsPrecision
             );
         }
+    } else if (valueType === "object") {
+        // Nothing to do
+    } else if (valueType === "array") {
+        const arrayValue = value as [];
+        valueTypeStats.arrayMaxLength = Math.max(valueTypeStats.arrayMaxLength || 0, arrayValue.length);
+        valueTypeStats.arrayMinLength = Math.min(valueTypeStats.arrayMaxLength || 0, arrayValue.length);
     }
 
     if (valueTypeStats.stringOptions != null) {
-        const valueString = value.toString() as string;
+        if (valueType === "object" || valueType === "array") {
+            delete valueTypeStats.stringOptions;
+            return;
+        }
 
+        const valueString = value.toString() as string;
         if (valueString.length > 50) {
             valueTypeStats.stringOptions = undefined;
         } else {
@@ -238,4 +212,136 @@ function updateValueTypeStats(value: DPMRecordValue, valueType: DPMPropertyTypes
             if (Object.keys(valueTypeStats.stringOptions).length > 50) delete valueTypeStats.stringOptions; // delete if there are too many options
         }
     }
+}
+
+/** Recursively inspects the contents of arrays */
+export function inspectArray(
+    title: string,
+    array: DPMRecord[],
+    types: ValueTypes,
+    labelDetector: ContentLabelDetector,
+    interationDepth: number
+): (DPMRecordValue | DPMRecordValue[])[] {
+    if (interationDepth > 10) return array;
+
+    const typeConvertedArray: (DPMRecordValue | DPMRecordValue[])[] = [];
+
+    for (const record of array) {
+        const typeConvertedValue = inspectValue(title, record, types, labelDetector, interationDepth + 1);
+        typeConvertedArray.push(typeConvertedValue);
+    }
+
+    return typeConvertedArray;
+}
+/** Recursively inspects the contents of objects */
+export function inspectObject(
+    properties: Record<string, Property>,
+    record: DPMRecord,
+    contentLabelDetector: ContentLabelDetector,
+    interationDepth = 10 // TODO configurable?
+): DPMRecord {
+    if (interationDepth === 0) {
+        return record;
+    }
+
+    const typeConvertedRecord: DPMRecord | DPMRecord[] = {};
+
+    Array.from(Object.keys(record)).forEach((title: string) => {
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        let property = properties![title];
+
+        if (property == null) {
+            const propertySchema: Property = {
+                title,
+                types: {}
+            };
+            // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+            properties![title] = propertySchema;
+            property = propertySchema;
+        }
+
+        const value = record[title];
+
+        if (property.types == null) return;
+
+        if (value != null) {
+            if (property.firstSeen == null) property.firstSeen = new Date();
+            property.lastSeen = new Date();
+        }
+
+        const typeConvertedValue = inspectValue(title, value, property.types, contentLabelDetector, interationDepth);
+
+        typeConvertedRecord[title] = typeConvertedValue;
+    });
+
+    return typeConvertedRecord;
+}
+
+function inspectValue(
+    title: string,
+    value: DPMRecordValue,
+    types: ValueTypes,
+    labelDetector: ContentLabelDetector,
+    iterationDepth: number
+): DPMRecordValue | (DPMRecordValue | DPMRecordValue[])[] {
+    let valueType: DPMPropertyTypes = discoverValueType(value);
+    let typeConvertedValue: DPMRecordValue | (DPMRecordValue | DPMRecordValue[])[];
+    try {
+        typeConvertedValue = convertValueByValueType(value, valueType);
+    } catch (error) {
+        const message = `Failed to convert value ${value} to type ${valueType}`;
+        throw new Error(message);
+    }
+
+    if (!types[valueType]) {
+        types[valueType] = {
+            recordCount: 0,
+            stringOptions: {}
+        };
+    }
+
+    const valueTypeStats = types[valueType] as ValueTypeStatistics;
+
+    // If an integer is detected, and there exists
+    // already numbers. Then count this as a number (and not an integer)
+    if (valueType === "integer") {
+        if (types.number != null) {
+            valueType = "number" as DPMPropertyTypes;
+        }
+
+        // if a number is detected, and there exists
+        // already integers. Then convert those prior integer valueTypes
+        // to number.
+    } else if (valueType === "number") {
+        if (types.integer != null) {
+            types.number = types.integer;
+            delete types.integer;
+        }
+    } else if (valueType === "object") {
+        if (valueTypeStats.objectProperties == null) valueTypeStats.objectProperties = {};
+        const objectLabelDetector = labelDetector.getObjectLabelDetector(title);
+        typeConvertedValue = inspectObject(
+            valueTypeStats.objectProperties,
+            typeConvertedValue as DPMRecord,
+            objectLabelDetector,
+            iterationDepth - 1
+        );
+    } else if (valueType === "array") {
+        if (valueTypeStats.arrayTypes == null) valueTypeStats.arrayTypes = {};
+
+        const arrayLabelDetector = labelDetector.getObjectLabelDetector(title);
+        typeConvertedValue = inspectArray(
+            title,
+            typeConvertedValue as DPMRecord[],
+            valueTypeStats.arrayTypes,
+            arrayLabelDetector,
+            iterationDepth - 1
+        );
+    }
+
+    updateValueTypeStats(typeConvertedValue, valueType as DPMPropertyTypes, valueTypeStats);
+
+    labelDetector.inspectValue(title, typeConvertedValue, valueType);
+
+    return typeConvertedValue;
 }

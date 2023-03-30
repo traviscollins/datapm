@@ -1,5 +1,5 @@
 import { expect } from "chai";
-import Knex from "knex";
+import knex, { Knex } from "knex";
 import { GenericContainer, StartedTestContainer } from "testcontainers";
 import { SinkErrors } from "datapm-client-lib";
 import { resetConfiguration } from "../../src/util/ConfigUtil";
@@ -52,7 +52,7 @@ describe("MySQL Sink Test", function () {
         mysqlHost = mysqlContainer.getContainerIpAddress();
         mysqlPort = mysqlContainer.getMappedPort(3306);
 
-        knexClient = Knex({
+        knexClient = knex({
             client: "mysql",
             connection: {
                 host: mysqlHost,
@@ -60,7 +60,7 @@ describe("MySQL Sink Test", function () {
                 user: "root",
                 password: "",
                 database: "datapm"
-            } as Knex.MySqlConnectionConfig
+            } as Knex.PgConnectionConfig
         });
 
         console.log("Mysql port: " + mysqlPort);
@@ -75,8 +75,8 @@ describe("MySQL Sink Test", function () {
         removePackageFiles(["legislators"]);
         removePackageFiles(["covid-02-01-2020"]);
 
-        knexClient.destroy();
-        await mysqlContainer.stop();
+        knexClient?.destroy();
+        await mysqlContainer?.stop();
     });
 
     it("Can't connect to invalid URI", async function () {
@@ -89,7 +89,7 @@ describe("MySQL Sink Test", function () {
 
         const cmdResult = await testCmd(
             "fetch",
-            [packageAFilePath, "--sink", "mysql"],
+            [packageAFilePath, "--sinkType", "mysql"],
             prompts,
             async (line: string, promptIndex: number) => {
                 if (promptIndex === prompts.length && line.includes(SinkErrors.CONNECTION_FAILED)) {
@@ -121,7 +121,7 @@ describe("MySQL Sink Test", function () {
 
         const cmdResult = await testCmd(
             "fetch",
-            [packageAFilePath, "--sink", "mysql"],
+            [packageAFilePath, "--sinkType", "mysql"],
             prompts,
             async (line: string, promptIndex: number) => {
                 if (promptIndex === prompts.length && line.includes(SinkErrors.AUTHENTICATION_FAILED)) {
@@ -152,7 +152,7 @@ describe("MySQL Sink Test", function () {
 
         const cmdResult = await testCmd(
             "fetch",
-            [packageAFilePath, "--sink", "mysql"],
+            [packageAFilePath, "--sinkType", "mysql"],
             prompts,
             async (line: string, promptIndex: number) => {
                 console.log(line);
@@ -178,7 +178,7 @@ describe("MySQL Sink Test", function () {
 
         const cmdResult = await testCmd(
             "fetch",
-            [packageAFilePath, "--sink", "mysql"],
+            [packageAFilePath, "--sinkType", "mysql"],
             prompts,
             async (line: string, promptIndex: number) => {
                 if (promptIndex === prompts.length && line.includes("Finished writing 67 records")) {
@@ -241,7 +241,7 @@ describe("MySQL Sink Test", function () {
 
         const cmdResult = await testCmd(
             "fetch",
-            [packageAFilePath, "--sink", "mysql"],
+            [packageAFilePath, "--sinkType", "mysql"],
             prompts,
             async (line: string, promptIndex: number) => {
                 if (promptIndex === prompts.length && line.includes("No new records available")) {
@@ -274,7 +274,7 @@ describe("MySQL Sink Test", function () {
 
         const cmdResult = await testCmd(
             "fetch",
-            [packageAFilePath, "--sink", "mysql", "--force-update"],
+            [packageAFilePath, "--sinkType", "mysql", "--force-update"],
             prompts,
             async (line: string, promptIndex: number) => {
                 if (promptIndex === prompts.length && line.includes("Finished writing 67 records")) {
@@ -322,7 +322,7 @@ describe("MySQL Sink Test", function () {
 
         const cmdResult = await testCmd(
             "fetch",
-            [packageBFilePath, "--sink", "mysql"],
+            [packageBFilePath, "--sinkType", "mysql"],
             prompts,
             async (line: string, promptIndex: number) => {
                 if (promptIndex === prompts.length && line.includes("Finished writing 100 records")) {
@@ -416,7 +416,7 @@ describe("MySQL Sink Test", function () {
 
         const cmdResult = await testCmd(
             "fetch",
-            [packageCFilePath, "--sink", "mysql"],
+            [packageCFilePath, "--sinkType", "mysql"],
             prompts,
             async (line: string, promptIndex: number) => {
                 if (promptIndex === prompts.length && line.includes("Finished writing 538 records")) {

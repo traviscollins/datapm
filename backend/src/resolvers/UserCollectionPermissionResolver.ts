@@ -18,13 +18,17 @@ import { ValidationError } from "apollo-server";
 import { getCollectionFromCacheOrDbOrFail } from "./CollectionResolver";
 import { deleteCollectionFollowByUserId } from "./FollowResolver";
 import { isAuthenticatedContext } from "../util/contextHelpers";
+import { GroupCollectionPermissionRepository } from "../repository/GroupCollectionPermissionRepository";
+import { createActivityLog } from "../repository/ActivityLogRepository";
+import { ActivityLogEventType, UserCollectionPermissions } from "datapm-client-lib";
+import { UserCollectionPermissionEntity } from "../entity/UserCollectionPermissionEntity";
 
 export const hasCollectionPermissions = async (
     context: Context,
     collection: CollectionEntity,
     permission: Permission
-) => {
-    if (permission == Permission.VIEW) {
+): Promise<boolean> => {
+    if (permission === Permission.VIEW) {
         if (collection?.isPublic) return true;
     }
 
@@ -32,14 +36,16 @@ export const hasCollectionPermissions = async (
         return false;
     }
 
-    return getCollectionPermissionsFromCacheOrDb(context, collection, permission);
+    const permissions = await getCollectionPermissionsFromCacheOrDb(context, collection);
+
+    return permissions?.includes(permission) || false;
 };
 
 export const grantAllCollectionPermissionsForUser = async (
     transaction: EntityManager,
     userId: number,
     collectionId: number
-) => {
+): Promise<UserCollectionPermissionEntity> => {
     return transaction
         .getCustomRepository(UserCollectionPermissionRepository)
         .grantAllPermissionsForUser(userId, collectionId);
@@ -49,22 +55,21 @@ export const setPermissionsForUser = async (
     context: AuthenticatedContext,
     collectionId: number,
     permissions: Permission[]
-) => {
+): Promise<UserCollectionPermissionEntity> => {
     return context.connection
         .getCustomRepository(UserCollectionPermissionRepository)
         .setPermissionsForUser(context.me.id, collectionId, permissions);
 };
 
 export const setUserCollectionPermissions = async (
-    _0: any,
+    _0: unknown,
     {
         identifier,
         value,
         message
     }: { identifier: CollectionIdentifierInput; value: SetUserCollectionPermissionsInput[]; message: string },
-    context: AuthenticatedContext,
-    info: any
-) => {
+    context: AuthenticatedContext
+): Promise<void> => {
     validateMessageContents(message);
 
     const collectionEntity = await context.connection
@@ -89,10 +94,19 @@ export const setUserCollectionPermissions = async (
                 if (!collectionEntity.isPublic) {
                     await deleteCollectionFollowByUserId(transaction, collectionEntity.id, user.id);
                 }
-                return await collectionPermissionRepository.deleteUserCollectionPermissionsForUser({
+                await collectionPermissionRepository.deleteUserCollectionPermissionsForUser({
                     identifier,
                     user
                 });
+
+                await createActivityLog(transaction, {
+                    userId: context.me.id,
+                    eventType: ActivityLogEventType.COLLECTION_USER_PERMISSION_REMOVED,
+                    targetCollectionId: collectionEntity.id,
+                    targetUserId: user.id
+                });
+
+                return;
             }
 
             if (user == null) {
@@ -102,11 +116,12 @@ export const setUserCollectionPermissions = async (
                         .createInviteUser(userCollectionPermission.usernameOrEmailAddress);
 
                     inviteUsers.push(inviteUser);
+                    user = inviteUser;
                 } else {
                     throw new ValidationError("USER_NOT_FOUND - " + userCollectionPermission.usernameOrEmailAddress);
                 }
             } else {
-                if (user.status == UserStatus.PENDING_SIGN_UP) {
+                if (user.status === UserStatus.PENDING_SIGN_UP) {
                     inviteUsers.push(user);
                 } else {
                     existingUsers.push(user);
@@ -117,10 +132,18 @@ export const setUserCollectionPermissions = async (
                 identifier,
                 value: userCollectionPermission
             });
+
+            await createActivityLog(transaction, {
+                userId: context.me.id,
+                eventType: ActivityLogEventType.COLLECTION_USER_PERMISSION_ADDED_UPDATED,
+                targetCollectionId: collectionEntity.id,
+                targetUserId: user.id,
+                permissions: userCollectionPermission.permissions
+            });
         });
     });
 
-    await asyncForEach(inviteUsers, async (user) => {
+    await asyncForEach(existingUsers, async (user) => {
         await sendShareNotification(
             user,
             context.me.displayName,
@@ -135,10 +158,10 @@ export const setUserCollectionPermissions = async (
 };
 
 export const deleteUserCollectionPermissions = async (
-    _0: any,
+    _0: unknown,
     { identifier, usernameOrEmailAddress }: { identifier: CollectionIdentifierInput; usernameOrEmailAddress: string },
     context: AuthenticatedContext
-) => {
+): Promise<void> => {
     return context.connection.transaction(async (transaction) => {
         const user = await transaction
             .getCustomRepository(UserRepository)
@@ -167,22 +190,45 @@ export const deleteUserCollectionPermissions = async (
 
 export const getCollectionPermissionsFromCacheOrDb = async (
     context: Context,
-    collection: CollectionEntity,
-    permission: Permission
-) => {
+    collection: CollectionEntity
+): Promise<Permission[]> => {
     if (!isAuthenticatedContext(context)) {
-        return false;
+        if (collection.isPublic) return [Permission.VIEW];
+        else return [];
     }
 
     const userId = (context as AuthenticatedContext).me.id;
-    const collectionPromiseFunction = () =>
-        context.connection
-            .getCustomRepository(UserCollectionPermissionRepository)
-            .hasPermission(userId, collection, permission);
 
-    return await context.cache.loadCollectionPermissionsStatusById(
-        collection.id,
-        permission,
-        collectionPromiseFunction
-    );
+    const collectionPromiseFunction = async () => {
+        const userPermissions = await context.connection
+            .getCustomRepository(UserCollectionPermissionRepository)
+            .findCollectionPermissions({ collectionId: collection.id, userId });
+
+        const userGroupPermissions = await context.connection
+            .getCustomRepository(GroupCollectionPermissionRepository)
+            .getCollectionPermissionsByUser({
+                collectionId: collection.id,
+                userId
+            });
+
+        const permissions: Permission[] = [];
+
+        if (userPermissions) {
+            userPermissions.permissions.forEach((permission) => {
+                if (!permissions.includes(permission)) permissions.push(permission);
+            });
+        }
+
+        if (userGroupPermissions) {
+            userGroupPermissions.forEach((groupPermission) => {
+                groupPermission.permissions.forEach((permission) => {
+                    if (!permissions.includes(permission)) permissions.push(permission);
+                });
+            });
+        }
+
+        return permissions;
+    };
+
+    return (await context.cache.loadCollectionPermissionsById(collection.id, collectionPromiseFunction)) || [];
 };

@@ -14,6 +14,8 @@ import { PackageFile060, Source060 } from "./PackageFile-v0.6.0";
 import { PackageFile070 } from "./PackageFile-v0.7.0";
 import { PackageFile080 } from "./PackageFile-v0.8.0";
 import { PackageFile as PackageFile081 } from "./PackageFile-v0.8.1";
+import { PackageFile as PackageFile090, Properties as Properties090 } from "./PackageFile-v0.9.0";
+import { PackageFile as PackageFile0315 } from "./PackageFile-v0.31.5";
 import {
     PackageFile,
     PublishMethod,
@@ -22,9 +24,12 @@ import {
     Source,
     StreamSet,
     Properties,
-    ValueTypeStatistics
-} from "./PackageFile-v0.9.0";
+    ValueTypeStatistics,
+    Property,
+    ValueTypes
+} from "./PackageFile-v0.32.1";
 import { DATAPM_VERSION } from "./DataPMVersion";
+import { UpdateMethod } from "./DataHandlingUtil";
 
 export type DPMPropertyTypes =
     | "string"
@@ -82,6 +87,9 @@ export interface RecordStreamContext {
 
     /** The wrapped recordContext - which comes from the Source */
     recordContext: RecordContext;
+
+    /** The update method defined by the stream at the time of producing the record */
+    updateMethod: UpdateMethod;
 }
 
 export enum Compability {
@@ -401,6 +409,7 @@ export function compareProperties(priorProperties: Properties, newProperties: Pr
                 pointer: propertyPointer
             });
 
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
         const priorSchemaValueTypes = Object.keys(priorProperty.types!);
         const newSchemaValueTypes = Object.keys(newProperty.types ?? []);
 
@@ -431,15 +440,11 @@ export function compareProperties(priorProperties: Properties, newProperties: Pr
                 type: DifferenceType.ADD_PROPERTY,
                 pointer: propertyPointer
             });
-        } else if (
-            priorProperty.properties != null &&
-            priorProperty.types.object != null &&
-            newProperties[newKey].types.object != null
-        ) {
+        } else if (priorProperty.types.object?.objectProperties != null && newProperties[newKey].types.object != null) {
             const changes = compareProperties(
-                priorProperty.properties,
+                priorProperty.types.object.objectProperties,
                 // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-                newProperties[newKey].properties!,
+                newProperties[newKey].types.object!.objectProperties!,
                 propertyPointer
             );
 
@@ -506,6 +511,8 @@ export function diffCompatibility(diffs: Difference[]): Compability {
 
             case DifferenceType.CHANGE_SOURCE:
             case DifferenceType.CHANGE_SOURCE_CONFIGURATION:
+            case DifferenceType.CHANGE_SOURCE_CONNECTION:
+            case DifferenceType.CHANGE_SOURCE_CREDENTIALS:
             case DifferenceType.REMOVE_HIDDEN_PROPERTY:
             case DifferenceType.REMOVE_HIDDEN_SCHEMA:
             case DifferenceType.CHANGE_VERSION: // this just requires that the number be at least one minor version greater, it doesn't return the actual difference
@@ -529,7 +536,6 @@ export function diffCompatibility(diffs: Difference[]): Compability {
             case DifferenceType.CHANGE_README_FILE:
             case DifferenceType.CHANGE_LICENSE_FILE:
             case DifferenceType.CHANGE_STREAM_UPDATE_METHOD:
-            case DifferenceType.CHANGE_SOURCE_CREDENTIALS:
                 // nothing to do
                 break;
 
@@ -605,6 +611,7 @@ export function loadPackageFileFromDisk(packageFilePath: string): PackageFile {
         }
 
         packageFile.readmeMarkdown = fs.readFileSync(readmeFileAbsolutePath).toString();
+        delete packageFile.readmeFile;
     }
 
     if (packageFile.licenseFile != null) {
@@ -615,6 +622,7 @@ export function loadPackageFileFromDisk(packageFilePath: string): PackageFile {
         }
 
         packageFile.licenseMarkdown = fs.readFileSync(licenseFileAbsolutePath).toString();
+        delete packageFile.licenseFile;
     }
 
     return packageFile;
@@ -623,6 +631,48 @@ export function loadPackageFileFromDisk(packageFilePath: string): PackageFile {
 function massagePackageFile(packageFile: PackageFile): void {
     if (typeof packageFile.updatedDate === "string") {
         packageFile.updatedDate = new Date(packageFile.updatedDate);
+    }
+
+    for (const schema of packageFile.schemas) {
+        for (const propertyKey of Object.keys(schema.properties)) {
+            const property = schema.properties[propertyKey];
+
+            massageProperty(property);
+        }
+    }
+}
+
+function massageProperty(property: Property) {
+    if (typeof property.firstSeen === "string") {
+        property.firstSeen = new Date(property.firstSeen);
+    }
+
+    if (typeof property.lastSeen === "string") {
+        property.lastSeen = new Date(property.lastSeen);
+    }
+
+    massageValueTypeStats(property.types);
+}
+
+function massageValueTypeStats(valueTypes?: ValueTypes) {
+    if (valueTypes == null) return;
+
+    if (typeof valueTypes.date?.dateMaxValue === "string") {
+        valueTypes.date.dateMaxValue = new Date(valueTypes.date.dateMaxValue);
+    }
+
+    if (typeof valueTypes.date?.dateMinValue === "string") {
+        valueTypes.date.dateMinValue = new Date(valueTypes.date.dateMinValue);
+    }
+
+    if (valueTypes.array?.arrayTypes != null) {
+        massageValueTypeStats(valueTypes.array.arrayTypes);
+    }
+
+    if (valueTypes.object?.objectProperties != null) {
+        for (const property of Object.values(valueTypes.object.objectProperties)) {
+            massageProperty(property);
+        }
     }
 }
 
@@ -890,6 +940,51 @@ export function upgradePackageFile(packageFileObject: any): PackageFile {
         }
     }
 
+    if ((packageFileObject.$schema as string).endsWith("v0.9.0.json")) {
+        packageFileObject.$schema = (packageFileObject.$schema as string).replace("0.9.0", "0.31.5");
+
+        const oldPackageFile = packageFileObject as PackageFile090;
+
+        const recurseProperties = (properties: Properties090): void => {
+            for (const propertyKey of Object.keys(properties)) {
+                const oldProperty = properties[propertyKey];
+                const newProperty = properties[propertyKey] as Property;
+                if (oldProperty.properties != null && oldProperty.types.object != null) {
+                    newProperty.types.object = {
+                        ...oldProperty.types.object,
+                        objectProperties: oldProperty.properties
+                    };
+
+                    recurseProperties(oldProperty.properties);
+                    delete oldProperty.properties;
+                }
+            }
+        };
+
+        for (const schema of oldPackageFile.schemas) {
+            recurseProperties(schema.properties);
+        }
+    }
+
+    if ((packageFileObject.$schema as string).endsWith("v0.31.5.json")) {
+        packageFileObject.$schema = (packageFileObject.$schema as string).replace("0.31.5", "0.32.1");
+
+        const oldPackageFile = packageFileObject as PackageFile0315;
+
+        if (oldPackageFile.readmeFile != null && oldPackageFile.readmeMarkdown != null)
+            delete oldPackageFile.readmeFile;
+
+        if (oldPackageFile.licenseFile != null && oldPackageFile.licenseMarkdown != null)
+            delete oldPackageFile.licenseFile;
+
+        if (oldPackageFile.readmeFile == null && oldPackageFile.readmeMarkdown == null)
+            oldPackageFile.readmeMarkdown =
+                "# " + oldPackageFile.displayName ?? oldPackageFile.packageSlug + "\n\n No readme defined";
+
+        if (oldPackageFile.licenseFile == null && oldPackageFile.licenseMarkdown == null)
+            oldPackageFile.licenseMarkdown = "No license defined";
+    }
+
     return packageFileObject as PackageFile;
 }
 
@@ -902,7 +997,7 @@ export async function validatePackageFileInBrowser(packageFile: PackageFile): Pr
 
     const schemaVersion = getSchemaVersionFromPackageFile(packageFile);
 
-    const response = await fetch("/docs/datapm-package-file-schema-v" + schemaVersion.format() + ".json");
+    const response = await fetch("/static/datapm-package-file-schema-v" + schemaVersion.format() + ".json");
 
     if (response.status > 199 && response.status < 300) {
         packageSchemaFile = await response.text();
@@ -936,9 +1031,9 @@ export function getSchemaVersionFromPackageFile(packageFileObject: any): SemVer 
     let packageFileSchemaUrl = packageFileObject.$schema as string;
 
     if (packageFileSchemaUrl == null)
-        packageFileSchemaUrl = "https://datapm.io/docs/datapm-package-file-schema-v0.1.0.json";
+        packageFileSchemaUrl = "https://datapm.io/static/datapm-package-file-schema-v0.1.0.json";
 
-    const schemaVersion = packageFileSchemaUrl.match(/package-file-schema-v(.*)\.json/i);
+    const schemaVersion = packageFileSchemaUrl.match(/v(.*)\.json/i);
 
     if (schemaVersion == null) throw new Error("ERROR_SCHEMA_VERSION_NOT_RECOGNIZED - " + packageFileSchemaUrl);
 

@@ -18,13 +18,23 @@ import { ValidateImageUploadDirective } from "./directive/ValidImageUploadDirect
 import { ValidBase64ImageUploadDirective } from "./directive/ValidBase64ImageUploadDirective";
 import { ValidUsernameOrEmailAddressDirective } from "./directive/ValidUsernameOrEmailAddressDirective";
 import { ValidateMarkdownDirective } from "./directive/ValidMarkdownDirective";
+import { HasGroupPermissionDirective } from "./directive/hasGroupPermissionDirective.ts";
+import { ValidGroupSlugDirective } from "./directive/ValidGroupSlugDirective";
+import { GraphQLSchema } from "graphql";
 
 const SCHEMAS_DIRECTORY = "node_modules/datapm-lib/";
-const SCHEMA_FILES = ["schema.gql", "auth-schema.gql", "user-schema.gql", "api-key-schema.gql", "images-schema.gql"];
+const SCHEMA_FILES = [
+    "schema.gql",
+    "auth-schema.gql",
+    "user-schema.gql",
+    "api-key-schema.gql",
+    "images-schema.gql",
+    "group-schema.gql"
+];
 
 const readFile = promisify(fs.readFile);
 
-export async function makeSchema() {
+export async function makeSchema(): Promise<GraphQLSchema> {
     const typeDefs = await buildSchemas();
 
     return makeExecutableSchema({
@@ -35,6 +45,7 @@ export async function makeSchema() {
             isAuthenticated: IsAuthenticatedDirective,
             hasCatalogPermission: HasCatalogPermissionDirective,
             hasCollectionPermission: HasCollectionPermissionDirective,
+            hasGroupPermission: HasGroupPermissionDirective,
             hasPackagePermission: HasPackagePermissionDirective,
             isAdmin: IsAdminDirective,
             validEmailAddress: ValidEmailDirective,
@@ -42,6 +53,7 @@ export async function makeSchema() {
             validUsernameOrEmailAddress: ValidUsernameOrEmailAddressDirective,
             validPassword: ValidPasswordDirective,
             validCatalogSlug: ValidCatalogSlugDirective,
+            validGroupSlug: ValidGroupSlugDirective,
             validPackageSlug: ValidPackageSlugDirective,
             validCollectionSlug: ValidCollectionSlugDirective,
             validImageUpload: ValidateImageUploadDirective,

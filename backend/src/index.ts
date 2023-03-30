@@ -3,12 +3,13 @@ import "reflect-metadata";
 import express from "express";
 import helmet from "helmet";
 import querystring from "querystring";
+// eslint-disable-next-line camelcase
 import express_enforces_ssl from "express-enforces-ssl";
 import proxy from "express-http-proxy";
 import { ApolloServer } from "apollo-server-express";
 
 import { AuthenticatedHTTPContext, AuthenticatedSocketContext, HTTPContext, SocketContext } from "./context";
-import { getMeFromAPIKey, getMeRequest } from "./util/me";
+import { getMeFromAPIKey, getMeJwt, getMeRequest } from "./util/me";
 import { makeSchema } from "./schema";
 import path from "path";
 import { getSecretVariable } from "./util/secrets";
@@ -21,18 +22,28 @@ import { UserRepository } from "./repository/UserRepository";
 import { PackageRepository } from "./repository/PackageRepository";
 import { CatalogRepository } from "./repository/CatalogRepository";
 import { CollectionRepository } from "./repository/CollectionRepository";
-import {  LeaderElectionService } from "./service/leader-election-service";
-import  { DistributedLockingService } from "./service/distributed-locking-service";
+import { LeaderElectionService } from "./service/leader-election-service";
+import { DistributedLockingService } from "./service/distributed-locking-service";
 import { SessionCache } from "./session-cache";
 import socketio from "socket.io";
 import http from "http";
 import { SocketConnectionHandler } from "./socket/SocketHandler";
+// eslint-disable-next-line node/no-deprecated-api
 import { parse } from "url";
 import { libPackageVersion } from "datapm-lib";
-import { generateCatalogSiteMap, generateCollectionsSiteMap, generatePackageSiteMap, generateSiteMapIndex } from "./util/SiteMapUtil";
+import {
+    generateCatalogSiteMap,
+    generateCollectionsSiteMap,
+    generatePackageSiteMap,
+    generateSiteMapIndex,
+    generateStaticSiteMap
+} from "./util/SiteMapUtil";
+import * as SegfaultHandler from "segfault-raub";
+import { GroupRepository } from "./repository/GroupRepository";
+import { getEnvVariable } from "./util/getEnvVariable";
+import { parseJwt } from "./util/jwt";
 
 console.log("DataPM Registry Server Starting...");
-
 
 const REGISTRY_API_VERSION = libPackageVersion();
 
@@ -41,7 +52,6 @@ const REFERER_REGEX = /\/graphql\/?$/;
 const app = express();
 
 async function main() {
-
     process.title = "DataPM Registry Server";
 
     // get secrets from environment variable or from secret manager
@@ -64,7 +74,7 @@ async function main() {
     const distributedLockingService = new DistributedLockingService();
 
     const leaderElectionService = new LeaderElectionService(distributedLockingService, connection);
-    
+
     // Do not await the next line, as it is a long running operation
     leaderElectionService.start();
 
@@ -74,26 +84,30 @@ async function main() {
         await distributedLockingService.stop();
     });
 
-
-
     const context = async ({ req }: { req: express.Request }): Promise<HTTPContext | AuthenticatedHTTPContext> => {
         const me = await getMeRequest(req, connection.manager);
 
-        if(!me) {
+        if (!me) {
             return {
                 request: req,
                 connection: connection,
                 cache: new SessionCache()
-            }
+            };
+        }
+
+        let isAdmin = me.isAdmin;
+
+        if (!isAdmin) {
+            isAdmin = await connection.getCustomRepository(GroupRepository).userIsMemberOfAdminGroup(me);
         }
 
         return {
             request: req,
             me,
+            isAdmin,
             connection: connection,
             cache: new SessionCache()
-        }
-        
+        };
     };
 
     const schema = await makeSchema();
@@ -120,8 +134,8 @@ async function main() {
                 return err;
             },
             generateClientInfo: ({ request }) => {
-                let clientName: string | undefined = undefined;
-                let clientVersion: string | undefined = undefined;
+                let clientName: string | undefined;
+                let clientVersion: string | undefined;
 
                 const headers = request.http?.headers;
                 if (headers) {
@@ -188,17 +202,17 @@ async function main() {
         })
     );
 
-    app.use("/docs/schema.gql", function (req, res, next) {
+    app.use("/static/schema.gql", function (req, res, next) {
         res.set("content-type", "application/graphql");
         res.send(fs.readFileSync("node_modules/datapm-lib/schema.gql"));
     });
 
-    app.use("/docs/datapm-package-file-schema-v1.json", function (req, res, next) {
+    app.use("/static/datapm-package-file-schema-v1.json", function (req, res, next) {
         res.set("content-type", "application/json");
         res.send(fs.readFileSync("node_modules/datapm-lib/packageFileSchema-v0.1.0.json"));
     });
 
-    app.use("/docs/datapm-package-file-schema-current.json", function (req, res, next) {
+    app.use("/static/datapm-package-file-schema-current.json", function (req, res, next) {
         res.set("content-type", "application/json");
 
         const files = fs.readdirSync("node_modules/datapm-lib/");
@@ -207,8 +221,8 @@ async function main() {
         res.send(fs.readFileSync("node_modules/datapm-lib/" + packageFiles[packageFiles.length - 1]));
     });
 
-    app.use("/docs/datapm-package-file-schema-*", function (req, res, next) {
-        const version = req.baseUrl.match(/^\/docs\/datapm-package-file-schema-v(.*)\.json$/i);
+    app.use("/static/datapm-package-file-schema-*", function (req, res, next) {
+        const version = req.baseUrl.match(/^\/static\/datapm-package-file-schema-v(.*)\.json$/i);
         if (version == null) {
             res.sendStatus(404);
             return;
@@ -218,87 +232,79 @@ async function main() {
     });
 
     app.use("/robots.txt", function (req, res, next) {
-        switch (process.env["ALLOW_WEB_CRAWLERS"]) {
-            case "true":
-            case "1":
-            case "yes":
-                const localRobotsTxt = path.join(__dirname, "robots-production.txt")
-                const staticRobotsTxt = path.join(__dirname, "..", "static","robots-production.txt");
-                let content = "";
-                if(fs.existsSync(localRobotsTxt))
-                    content = fs.readFileSync(localRobotsTxt,'utf-8').toString();
-                else if(fs.existsSync(staticRobotsTxt))
-                    content = fs.readFileSync(staticRobotsTxt, 'utf-8').toString();
-                else {
-                    res.sendStatus(404);
-                    return;
-                }
+        if (
+            process.env.ALLOW_WEB_CRAWLERS === "true" ||
+            process.env.ALLOW_WEB_CRAWLERS === "1" ||
+            process.env.ALLOW_WEB_CRAWLERS === "yes"
+        ) {
+            const localRobotsTxt = path.join(__dirname, "robots-production.txt");
+            const staticRobotsTxt = path.join(__dirname, "..", "static", "robots-production.txt");
+            let content = "";
+            if (fs.existsSync(localRobotsTxt)) content = fs.readFileSync(localRobotsTxt, "utf-8").toString();
+            else if (fs.existsSync(staticRobotsTxt)) content = fs.readFileSync(staticRobotsTxt, "utf-8").toString();
+            else {
+                res.sendStatus(404);
+                return;
+            }
 
-                content = content.replace("${REGISTRY_URL}", process.env["REGISTRY_URL"] as string);
+            // eslint-disable-next-line no-template-curly-in-string
+            content = content.replace("${REGISTRY_URL}", getEnvVariable("REGISTRY_URL") as string);
 
-                res.header("Content-Type","text/plain").send(content);
-
-                break;
-            default:
-
-                const localRobotsTxt2 = path.join(__dirname, "robots.txt")
-                const staticRobotsTxt2 = path.join(__dirname, "..", "static","robots.txt");
-
-                if(fs.existsSync(localRobotsTxt2))
-                    res.header("Content-Type","text/plain").sendFile(localRobotsTxt2);
-                else if(fs.existsSync(staticRobotsTxt2))
-                    res.header("Content-Type","text/plain").sendFile(staticRobotsTxt2);
+            res.header("Content-Type", "text/plain").send(content);
+            return;
         }
+
+        const localRobotsTxt2 = path.join(__dirname, "robots.txt");
+        const staticRobotsTxt2 = path.join(__dirname, "..", "static", "robots.txt");
+
+        if (fs.existsSync(localRobotsTxt2)) res.header("Content-Type", "text/plain").sendFile(localRobotsTxt2);
+        else if (fs.existsSync(staticRobotsTxt2)) res.header("Content-Type", "text/plain").sendFile(staticRobotsTxt2);
     });
 
-
-    /** Client Installer Downloads */
+    /** Terraform script Downloads */
     app.use("/static/terraform-scripts/:type", async (req, res, next) => {
+        const terraFormScriptsDirectory = path.join(__dirname, "static", "terraform-scripts");
 
-        const terraFormScriptsDirectory = path.join(__dirname, "static","terraform-scripts");
-
-
-        if(!fs.existsSync(terraFormScriptsDirectory)) {
+        if (!fs.existsSync(terraFormScriptsDirectory)) {
             res.sendStatus(404);
             return;
         }
 
         const files = fs.readdirSync(terraFormScriptsDirectory);
 
-        let startsWith: string | undefined = undefined;
+        let startsWith: string | undefined;
 
-        if(req.params.type === "gcp") {
+        if (req.params.type === "gcp") {
             startsWith = "datapm-gcp-terraform-";
         }
 
-        if(startsWith === undefined) {
+        if (startsWith === undefined) {
             res.sendStatus(403);
             return;
         }
 
         const file = files.find((f) => f.startsWith(startsWith as string) && f.endsWith(".zip"));
 
-        if(file == null) {
+        if (file == null) {
             res.sendStatus(404);
             return;
         }
 
-        res.setHeader('Content-Type', 'application/zip');
-        res.setHeader('Transfer-Encoding', 'chunked');
-        res.setHeader('Content-Disposition', `attachment; filename="${file}"`);
+        res.setHeader("Content-Type", "application/zip");
+        res.setHeader("Transfer-Encoding", "chunked");
+        res.setHeader("Content-Disposition", `attachment; filename="${file}"`);
 
         const filePath = path.join(terraFormScriptsDirectory, file);
 
         const reader = fs.createReadStream(filePath);
 
-        reader.once("close",()=> {
+        reader.once("close", () => {
             res.end();
-        })
+        });
 
-        reader.once("open",()=> {
+        reader.once("open", () => {
             reader.pipe(res);
-        })
-
+        });
     });
 
     // These three routes serve angular static content
@@ -307,7 +313,7 @@ async function main() {
         express.static(path.join(__dirname, "..", "static"), {
             setHeaders: (res, path) => {
                 // set cache to 1 year for anything that includes a hash
-                const maxAge = path.match(/\.[a-fA-F0-9]{20}\.[^\/]+$/) ? 31536000 : 0;
+                const maxAge = path.match(/\.[a-fA-F0-9]{20}\.[^\\/]+$/) ? 31536000 : 0;
                 res.setHeader("Cache-Control", `public, max-age=${maxAge}`);
             }
         })
@@ -318,7 +324,7 @@ async function main() {
         express.static(path.join(__dirname, "..", "static/docs"), {
             setHeaders: (res, path) => {
                 // set cache to 1 year for anything that includes a hash
-                const maxAge = path.match(/\.[a-fA-F0-9]{20}\.[^\/]+$/) ? 31536000 : 0;
+                const maxAge = path.match(/\.[a-fA-F0-9]{20}\.[^\\/]+$/) ? 31536000 : 0;
                 res.setHeader("Cache-Control", `public, max-age=${maxAge}`);
             }
         })
@@ -331,14 +337,14 @@ async function main() {
     server.applyMiddleware({ app, bodyParserConfig: { limit: "20mb" } });
 
     const respondWithReadable = async (readable: Readable, response: express.Response) => {
-        const imageBuffer = await new Promise<Buffer>((res) => {
-            const bufferedData: any[] = [];
+        const imageBuffer = await new Promise<Buffer>((resolve) => {
+            const bufferedData: Array<Uint8Array> = [];
             readable.on("data", (d) => {
                 bufferedData.push(d);
             });
             readable.on("end", () => {
                 const buffer = Buffer.concat(bufferedData);
-                res(buffer);
+                resolve(buffer);
             });
         });
 
@@ -355,10 +361,15 @@ async function main() {
             const user = await (await contextObject).connection
                 .getCustomRepository(UserRepository)
                 .findUserByUserName({ username: req.params.username });
+
+            if (user == null) {
+                res.sendStatus(404);
+                return;
+            }
+
             await respondWithReadable(await imageService.readUserAvatarImage(user.id), res);
         } catch (err) {
             res.status(404).send();
-            return;
         }
     });
 
@@ -368,10 +379,15 @@ async function main() {
             const user = await (await contextObject).connection
                 .getCustomRepository(UserRepository)
                 .findUserByUserName({ username: req.params.username });
+
+            if (user == null) {
+                res.sendStatus(404);
+                return;
+            }
+
             await respondWithReadable(await imageService.readUserCoverImage(user.id), res);
         } catch (err) {
             res.status(404).send();
-            return;
         }
     });
 
@@ -386,7 +402,6 @@ async function main() {
             await respondWithReadable(await imageService.readPackageCoverImage(user.id), res);
         } catch (err) {
             res.status(404).send();
-            return;
         }
     });
 
@@ -399,7 +414,6 @@ async function main() {
             await respondWithReadable(await imageService.readCatalogAvatarImage(user.id), res);
         } catch (err) {
             res.status(404).send();
-            return;
         }
     });
 
@@ -412,7 +426,6 @@ async function main() {
             await respondWithReadable(await imageService.readCatalogCoverImage(user.id), res);
         } catch (err) {
             res.status(404).send();
-            return;
         }
     });
 
@@ -425,16 +438,14 @@ async function main() {
             await respondWithReadable(await imageService.readCollectionCoverImage(collection.id), res);
         } catch (err) {
             res.status(404).send();
-            return;
         }
     });
-
 
     /** Client Installer Downloads */
     app.use("/client-installers/:type", async (req, res, next) => {
         let installerFileNameEndsWith = "not-found.something";
 
-        switch(req.params.type) {
+        switch (req.params.type) {
             case "windows": {
                 installerFileNameEndsWith = ".msixbundle";
                 break;
@@ -451,16 +462,15 @@ async function main() {
                 installerFileNameEndsWith = ".rpm";
                 break;
             }
-            default:  {
+            default: {
                 res.sendStatus(404);
                 return;
             }
-                
         }
 
         const clientInstallersPath = path.join(__dirname, "client-installers");
 
-        if(!fs.existsSync(clientInstallersPath)) {
+        if (!fs.existsSync(clientInstallersPath)) {
             res.sendStatus(404);
             return;
         }
@@ -469,83 +479,80 @@ async function main() {
 
         const installerFile = installerFiles.find((file) => file.endsWith(installerFileNameEndsWith));
 
-        if(!installerFile) {
+        if (!installerFile) {
             res.sendStatus(404);
             return;
         }
 
-        res.setHeader('Content-Type', 'application/octet-stream');
-        res.setHeader('Transfer-Encoding', 'chunked');
-        res.setHeader('Content-Disposition', `attachment; filename="${installerFile}"`);
+        res.setHeader("Content-Type", "application/octet-stream");
+        res.setHeader("Transfer-Encoding", "chunked");
+        res.setHeader("Content-Disposition", `attachment; filename="${installerFile}"`);
 
         const filePath = path.join(__dirname, "client-installers", installerFile);
 
         const reader = fs.createReadStream(filePath);
 
-
-        reader.once("close",()=> {
+        reader.once("close", () => {
             res.end();
-        })
+        });
 
-        reader.once("open",()=> {
+        reader.once("open", () => {
             reader.pipe(res);
-        })
-
-
+        });
     });
 
     app.use("/sitemap.xml", async (req, res, next) => {
-
         const contextObject = await context({ req });
 
         const siteMapContents = await generateSiteMapIndex(contextObject);
-        res.setHeader('Content-Type', 'application/xml');
-        res.setHeader('Content-Length', siteMapContents.length);
+        res.setHeader("Content-Type", "application/xml");
+        res.setHeader("Content-Length", siteMapContents.length);
 
         res.send(siteMapContents);
+    });
 
+    app.use("/sitemap_static.xml", async (req, res, next) => {
+        const siteMapContents = await generateStaticSiteMap();
+        res.setHeader("Content-Type", "application/xml");
+        res.setHeader("Content-Length", siteMapContents.length);
+
+        res.send(siteMapContents);
     });
 
     app.use("/sitemap_collections_:mapNumber.xml", async (req, res, next) => {
-
         const contextObject = await context({ req });
 
         const mapNumber = parseInt(req.params.mapNumber);
 
-        const siteMapContents = await generateCollectionsSiteMap(mapNumber,contextObject);
-        res.setHeader('Content-Type', 'application/xml');
-        res.setHeader('Content-Length', siteMapContents.length);
+        const siteMapContents = await generateCollectionsSiteMap(mapNumber, contextObject);
+        res.setHeader("Content-Type", "application/xml");
+        res.setHeader("Content-Length", siteMapContents.length);
 
         res.send(siteMapContents);
-
     });
 
     app.use("/sitemap_catalogs_:mapNumber.xml", async (req, res, next) => {
-
         const contextObject = await context({ req });
 
         const mapNumber = parseInt(req.params.mapNumber);
 
-        const siteMapContents = await generateCatalogSiteMap(mapNumber,contextObject);
-        res.setHeader('Content-Type', 'application/xml');
-        res.setHeader('Content-Length', siteMapContents.length);
+        const siteMapContents = await generateCatalogSiteMap(mapNumber, contextObject);
+        res.setHeader("Content-Type", "application/xml");
+        res.setHeader("Content-Length", siteMapContents.length);
 
         res.send(siteMapContents);
-
     });
 
     app.use("/sitemap_packages_:mapNumber.xml", async (req, res, next) => {
-
         const contextObject = await context({ req });
 
         const mapNumber = parseInt(req.params.mapNumber);
 
-        const siteMapContents = await generatePackageSiteMap(mapNumber,contextObject);
-        res.setHeader('Content-Type', 'application/xml');
-        res.setHeader('Content-Length', siteMapContents.length);
+        const siteMapContents = await generatePackageSiteMap(mapNumber, contextObject);
+        res.setHeader("Content-Type", "application/xml");
+        res.setHeader("Content-Length", siteMapContents.length);
 
         res.send(siteMapContents);
-
     });
 
     /** Data Web Socket Server */
@@ -558,55 +565,72 @@ async function main() {
         parser: require("socket.io-msgpack-parser")
     });
 
-    io.on('connection', async (socket) => {
-
-
-        const contextObject:SocketContext | AuthenticatedSocketContext = {
+    io.on("connection", async (socket) => {
+        const contextObject: SocketContext | AuthenticatedSocketContext = {
             connection,
-            cache: new SessionCache(),
-        }
+            cache: new SessionCache()
+        };
 
-        if(socket.handshake.auth.token != null) {
-            if(Array.isArray(socket.handshake.auth.token)) {
+        if (socket.handshake.auth.token != null) {
+            if (Array.isArray(socket.handshake.auth.token)) {
                 throw new Error("TOKEN_MUST_BE_SINGLE_VALUE");
             }
-    
-            const token = socket.handshake.auth.token;;
-            
-            const user = await getMeFromAPIKey(token,connection.manager);
-            
-            (contextObject as AuthenticatedSocketContext).me = user;
 
+            const token = socket.handshake.auth.token;
+
+            const user = await getMeFromAPIKey(token, connection.manager);
+
+            (contextObject as AuthenticatedSocketContext).me = user;
+        } else if (socket.handshake.auth.bearer != null) {
+            if (Array.isArray(socket.handshake.auth.bearer)) {
+                throw new Error("BEARER_MUST_BE_SINGLE_VALUE");
+            }
+
+            const bearer = socket.handshake.auth.bearer;
+
+            try {
+                const jwt = await parseJwt(bearer);
+
+                const user = await getMeJwt(jwt, connection.manager);
+
+                if (user == null) {
+                    socket.disconnect();
+                    return;
+                }
+
+                (contextObject as AuthenticatedSocketContext).me = user;
+            } catch (error) {
+                console.error(error.message);
+                socket.disconnect();
+                return;
+            }
         }
 
+        // TODO handle server shutdowns by disconnecting sockets
+        // eslint-disable-next-line no-new
         new SocketConnectionHandler(socket, contextObject, distributedLockingService);
-
-
     });
 
     // any route not yet defined goes to index.html
     app.use("*", (req, res, next) => {
+        const registryHostName = parse(getEnvVariable("REGISTRY_URL") as string).hostname;
 
-        const registryHostName = parse(process.env["REGISTRY_URL"] as string).hostname;
-
-        // If the request was to a hostname other than the  
+        // If the request was to a hostname other than the
         // hostname in hte registry_url environment variable,
         // redirect to the equivalent url on the correct name
-        if(req.hostname != registryHostName) {
-            const redirectDestination = `${process.env["REGISTRY_URL"]}${req.originalUrl}`;
-            res.redirect(301,redirectDestination);
+        if (req.hostname !== registryHostName) {
+            const redirectDestination = `${getEnvVariable("REGISTRY_URL")}${req.originalUrl}`;
+            res.redirect(301, redirectDestination);
             return;
         }
 
-        
         res.setHeader("x-datapm-version", REGISTRY_API_VERSION);
-        res.setHeader("x-datapm-registry-url", process.env["REGISTRY_URL"] as string); // TODO support other paths
+        res.setHeader("x-datapm-registry-url", getEnvVariable("REGISTRY_URL") as string); // TODO support other paths
         res.sendFile(path.join(__dirname, "..", "static", "index.html"));
     });
 
-    httpServer.listen(port,() => {
+    httpServer.listen(port, () => {
         console.log(`🚀 Server ready at http://localhost:${port}`);
     });
-
 }
 main().catch((error) => console.log(error));

@@ -12,6 +12,7 @@ import {
     Catalog,
     Collection,
     CollectionIdentifierInput,
+    Group,
     Package,
     PackageIdentifierInput,
     PackageIssue,
@@ -19,15 +20,20 @@ import {
 } from "../generated/graphql";
 import { PackageRepository } from "../repository/PackageRepository";
 import { catalogEntityToGraphQL, getCatalogFromCacheOrDbByIdOrFail } from "./CatalogResolver";
-import { collectionEntityToGraphQL, getCollectionFromCacheOrDbById } from "./CollectionResolver";
+import {
+    collectionEntityToGraphQL,
+    getCollectionFromCacheOrDbById,
+    getCollectionFromCacheOrDbByIdOrFail
+} from "./CollectionResolver";
 import { getPackageFromCacheOrDbByIdOrFail, packageEntityToGraphqlObject } from "./PackageResolver";
 import { versionEntityToGraphqlObject } from "./VersionResolver";
 import { VersionEntity } from "../entity/VersionEntity";
-import { getUserFromCacheOrDbById } from "./UserResolver";
+import { getUserFromCacheOrDbByIdOrFail } from "./UserResolver";
 import { ActivityLogRepository } from "../repository/ActivityLogRepository";
 import { PackageEntity } from "../entity/PackageEntity";
 import { CatalogEntity } from "../entity/CatalogEntity";
 import { CollectionEntity } from "../entity/CollectionEntity";
+import { GraphQLResolveInfo } from "graphql";
 
 export const activtyLogEntityToGraphQL = async function (
     context: Context,
@@ -40,13 +46,14 @@ export const activtyLogEntityToGraphQL = async function (
         changeType: activityLogEntity.changeType,
         createdAt: activityLogEntity.createdAt,
         updatedAt: activityLogEntity.updatedAt,
-        propertiesEdited: activityLogEntity.propertiesEdited
+        propertiesEdited: activityLogEntity.propertiesEdited,
+        permissions: activityLogEntity.permissions
     };
 
     if (activityLogEntity.userId) {
         if (activityLogEntity.user) activityLog.user = activityLogEntity.user;
         else {
-            activityLog.user = await getUserFromCacheOrDbById(context, connection, activityLogEntity.userId);
+            activityLog.user = await getUserFromCacheOrDbByIdOrFail(context, connection, activityLogEntity.userId);
         }
     }
 
@@ -65,7 +72,7 @@ export const activtyLogEntityToGraphQL = async function (
             activityLog.targetCollection = collectionEntityToGraphQL(activityLogEntity.targetCollection);
         else {
             activityLog.targetCollection = collectionEntityToGraphQL(
-                await getCollectionFromCacheOrDbById(context, connection, activityLogEntity.targetCollectionId)
+                await getCollectionFromCacheOrDbByIdOrFail(context, connection, activityLogEntity.targetCollectionId)
             );
         }
     }
@@ -106,10 +113,10 @@ export const activtyLogEntityToGraphQL = async function (
 };
 
 export const myActivity = async (
-    _0: any,
+    _0: unknown,
     { filter }: { filter: ActivityLogFilterInput },
     context: AuthenticatedContext,
-    info: any
+    info: GraphQLResolveInfo
 ): Promise<ActivityLogResult> => {
     const ALIAS = "myActivities";
     const { eventType, limit, offset } = filter;
@@ -138,10 +145,10 @@ export const myActivity = async (
 };
 
 export const collectionActivities = async (
-    _0: any,
+    _0: unknown,
     { identifier, filter }: { identifier: CollectionIdentifierInput; filter: ActivityLogFilterInput },
     context: AuthenticatedContext,
-    info: any
+    info: GraphQLResolveInfo
 ): Promise<ActivityLogResult> => {
     const ALIAS = "collectionActivities";
     const { limit, offset } = filter;
@@ -175,10 +182,10 @@ export const collectionActivities = async (
 };
 
 export const packageActivities = async (
-    _0: any,
+    _0: unknown,
     { identifier, filter }: { identifier: PackageIdentifierInput; filter: ActivityLogFilterInput },
     context: AuthenticatedContext,
-    info: any
+    info: GraphQLResolveInfo
 ): Promise<ActivityLogResult> => {
     const ALIAS = "packageActivities";
     const { limit, offset } = filter;
@@ -213,10 +220,10 @@ export const packageActivities = async (
 };
 
 export const catalogActivities = async (
-    _0: any,
+    _0: unknown,
     { identifier, filter }: { identifier: CollectionIdentifierInput; filter: ActivityLogFilterInput },
     context: AuthenticatedContext,
-    _info: any
+    _info: GraphQLResolveInfo
 ): Promise<ActivityLogResult> => {
     return {
         logs: [],
@@ -226,17 +233,23 @@ export const catalogActivities = async (
 };
 
 export const myFollowingActivity = async (
-    _0: any,
+    _0: unknown,
     { offset, limit }: { offset: number; limit: number },
     context: AuthenticatedContext,
-    info: any
-): Promise<any> => {
+    info: GraphQLResolveInfo
+): Promise<{
+    logs: ActivityLog[];
+    count: number;
+    hasMore: boolean;
+}> => {
     const relations = getRelationNames(graphqlFields(info).logs);
     const [logs, count] = await context.connection.manager
         .getCustomRepository(ActivityLogRepository)
         .getUserFollowingActivity(context.me.id, offset, limit, relations);
+
+    const convertedLogs = await logs.asyncMap((l) => activtyLogEntityToGraphQL(context, context.connection, l));
     return {
-        logs,
+        logs: convertedLogs,
         count,
         hasMore: count - (limit + offset) > 0
     };
@@ -244,27 +257,27 @@ export const myFollowingActivity = async (
 
 export const logId = async (
     parent: ActivityLog,
-    _1: any,
+    _1: unknown,
     context: AuthenticatedContext,
-    info: any
+    info: GraphQLResolveInfo
 ): Promise<number> => {
     return parent.id;
 };
 
 export const logPropertiesEdited = async (
     parent: ActivityLog,
-    _1: any,
+    _1: unknown,
     context: AuthenticatedContext,
-    info: any
-): Promise<any> => {
-    return parent.propertiesEdited;
+    info: GraphQLResolveInfo
+): Promise<string[] | null> => {
+    return parent.propertiesEdited || null;
 };
 
 export const logAuthor = async (
     parent: ActivityLog,
-    _1: any,
+    _1: unknown,
     context: AuthenticatedContext,
-    info: any
+    info: GraphQLResolveInfo
 ): Promise<User | null> => {
     const log = await getActivityLogFromCacheOrDbByIdOrFail(context, context.connection, parent.id, false);
     return log.user;
@@ -272,9 +285,9 @@ export const logAuthor = async (
 
 export const logPackage = async (
     parent: ActivityLog,
-    _1: any,
+    _1: unknown,
     context: AuthenticatedContext,
-    info: any
+    info: GraphQLResolveInfo
 ): Promise<Package | null> => {
     const cachedLog = await getActivityLogFromCacheOrDbByIdOrFail(context, context.connection, parent.id, false, [
         "targetPackage"
@@ -283,7 +296,7 @@ export const logPackage = async (
         return null;
     }
 
-    let targetPackageEntity = cachedLog.targetPackage;
+    const targetPackageEntity = cachedLog.targetPackage;
     if (targetPackageEntity) {
         return packageEntityToGraphqlObject(context, context.connection, targetPackageEntity);
     }
@@ -296,9 +309,9 @@ export const logPackage = async (
 
 export const logPackageIssue = async (
     parent: ActivityLog,
-    _1: any,
+    _1: unknown,
     context: AuthenticatedContext,
-    info: any
+    info: GraphQLResolveInfo
 ): Promise<PackageIssue | null> => {
     const cachedLog = await getActivityLogFromCacheOrDbByIdOrFail(context, context.connection, parent.id, false, [
         "targetPackageIssue"
@@ -308,7 +321,7 @@ export const logPackageIssue = async (
         return null;
     }
 
-    let targetPackageIssueEntity = cachedLog.targetPackageIssue;
+    const targetPackageIssueEntity = cachedLog.targetPackageIssue;
     if (targetPackageIssueEntity) {
         return targetPackageIssueEntity;
     }
@@ -321,9 +334,9 @@ export const logPackageIssue = async (
 
 export const logCatalog = async (
     parent: ActivityLog,
-    _1: any,
+    _1: unknown,
     context: AuthenticatedContext,
-    info: any
+    info: GraphQLResolveInfo
 ): Promise<Catalog | null> => {
     const cachedLog = await getActivityLogFromCacheOrDbByIdOrFail(context, context.connection, parent.id, false, [
         "targetCatalog"
@@ -332,7 +345,7 @@ export const logCatalog = async (
         return null;
     }
 
-    let targetCatalogEntity = cachedLog.targetCatalog;
+    const targetCatalogEntity = cachedLog.targetCatalog;
     if (targetCatalogEntity) {
         return catalogEntityToGraphQL(targetCatalogEntity);
     }
@@ -345,9 +358,9 @@ export const logCatalog = async (
 
 export const logCollection = async (
     parent: ActivityLog,
-    _1: any,
+    _1: unknown,
     context: AuthenticatedContext,
-    info: any
+    info: GraphQLResolveInfo
 ): Promise<Collection | null> => {
     const cachedLog = await getActivityLogFromCacheOrDbByIdOrFail(context, context.connection, parent.id, false, [
         "targetCollection"
@@ -356,7 +369,7 @@ export const logCollection = async (
         return null;
     }
 
-    let targetCollectionEntity = cachedLog.targetCollection;
+    const targetCollectionEntity = cachedLog.targetCollection;
     if (targetCollectionEntity) {
         return collectionEntityToGraphQL(targetCollectionEntity);
     }
@@ -367,18 +380,72 @@ export const logCollection = async (
     return collectionEntityToGraphQL(loadedLog.targetCollection as CollectionEntity);
 };
 
+export const logUser = async (
+    parent: ActivityLog,
+    _1: unknown,
+    context: AuthenticatedContext,
+    info: GraphQLResolveInfo
+): Promise<User | null> => {
+    const cachedLog = await getActivityLogFromCacheOrDbByIdOrFail(context, context.connection, parent.id, false, [
+        "targetUser"
+    ]);
+    if (!cachedLog.targetUserId) {
+        return null;
+    }
+
+    const targetUserEntity = cachedLog.targetUser;
+    if (targetUserEntity) {
+        return targetUserEntity;
+    }
+
+    const loadedLog = await getActivityLogFromCacheOrDbByIdOrFail(context, context.connection, parent.id, true, [
+        "targetUser"
+    ]);
+    return loadedLog.targetUser;
+};
+
+export const logGroup = async (
+    parent: ActivityLog,
+    _1: unknown,
+    context: AuthenticatedContext,
+    info: GraphQLResolveInfo
+): Promise<Group | null> => {
+    const cachedLog = await getActivityLogFromCacheOrDbByIdOrFail(context, context.connection, parent.id, false, [
+        "targetGroup"
+    ]);
+    if (!cachedLog.targetGroupId) {
+        return null;
+    }
+
+    const targetGroupEntity = cachedLog.targetGroup;
+    if (targetGroupEntity) {
+        return targetGroupEntity;
+    }
+
+    const loadedLog = await getActivityLogFromCacheOrDbByIdOrFail(context, context.connection, parent.id, true, [
+        "targetGroup"
+    ]);
+    return loadedLog.targetGroup;
+};
+
 export const getActivityLogFromCacheOrDbByIdOrFail = async (
     context: Context,
     connection: EntityManager | Connection,
     logId: number,
     forceReload?: boolean,
     relations: string[] = []
-) => {
+): Promise<ActivityLogEntity> => {
     if (!relations.includes("user")) {
         relations.push("user");
     }
 
     const logPromiseFunction = () =>
         connection.getCustomRepository(ActivityLogRepository).findOneOrFail({ id: logId }, { relations });
-    return await context.cache.loadActivityLog(logId, logPromiseFunction, forceReload);
+    const activityLog = await context.cache.loadActivityLog(logId, logPromiseFunction, forceReload);
+
+    if (!activityLog) {
+        throw new Error("ACTIVITY_LOG_NOT_FOUND");
+    }
+
+    return activityLog;
 };

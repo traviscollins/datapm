@@ -1,14 +1,26 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
 import { DerivedFrom, DPMConfiguration, ParameterType, Properties, Schema, Source, StreamSet } from "datapm-lib";
 import { ConnectorDescription } from "../connector/Connector";
-import { filterBadSchemaProperties, InspectionResults, inspectSource, inspectStreamSet, JobContext } from "../main";
+import {
+    filterBadSchemaProperties,
+    InspectionResults,
+    inspectSource,
+    inspectStreamSet,
+    JobContext,
+    PackageIdentifierInput
+} from "../main";
 import { obtainConnectionConfiguration } from "./ConnectionUtil";
 import { obtainCredentialsConfiguration } from "./CredentialsUtil";
 import * as SchemaUtil from "../util/SchemaUtil";
 import { validUnit } from "./IdentifierUtil";
 
+export type ConfigureSourceResponse =
+    | { source: Source; inspectionResults: InspectionResults; filteredSchemas: Record<string, Schema> }
+    | false;
+
 export async function configureSource(
     jobContext: JobContext,
+    relatedPackage: PackageIdentifierInput | undefined,
     connectorDescription: ConnectorDescription,
     connectionConfiguration: DPMConfiguration,
     credentialsConfiguration: DPMConfiguration,
@@ -19,7 +31,7 @@ export async function configureSource(
     includePackagingQuestions = true,
     excludedSchemaProperties: ExcludeSchemaProperties = {},
     renamedSchemaProperties: RenameSchemaProperties = {}
-): Promise<{ source: Source; inspectionResults: InspectionResults; filteredSchemas: Record<string, Schema> } | false> {
+): Promise<ConfigureSourceResponse> {
     const connector = await connectorDescription.getConnector();
     const sourceDescription = await connectorDescription.getSourceDescription();
 
@@ -30,6 +42,7 @@ export async function configureSource(
 
     const connectionConfigurationResults = await obtainConnectionConfiguration(
         jobContext,
+        relatedPackage,
         connector,
         connectionConfiguration,
         repositoryIdentifier,
@@ -39,10 +52,15 @@ export async function configureSource(
     if (connectionConfigurationResults === false) {
         return false;
     }
-    connectionConfiguration = connectionConfigurationResults.connectionConfiguration;
+
+    // Modify the orginal connectionConfiguration object with the new values
+    for (const key of Object.keys(connectionConfigurationResults.connectionConfiguration)) {
+        connectionConfiguration[key] = connectionConfigurationResults.connectionConfiguration[key];
+    }
 
     const credentialsConfigurationResults = await obtainCredentialsConfiguration(
         jobContext,
+        relatedPackage,
         connector,
         connectionConfiguration,
         credentialsConfiguration,
@@ -55,7 +73,10 @@ export async function configureSource(
         return false;
     }
 
-    credentialsConfiguration = credentialsConfigurationResults.credentialsConfiguration;
+    // Modify the orginal credentialConfiguration object with the new values
+    for (const key of Object.keys(credentialsConfigurationResults.credentialsConfiguration)) {
+        credentialsConfiguration[key] = credentialsConfigurationResults.credentialsConfiguration[key];
+    }
 
     const source = await sourceDescription.getSource();
 
@@ -81,9 +102,19 @@ export async function configureSource(
         "Connecting to " + (await connector.getRepositoryIdentifierFromConfiguration(connectionConfiguration))
     );
 
+    const sourceObject: Source = {
+        slug: source.sourceType(),
+        streamSets,
+        type: source.sourceType(),
+        connectionConfiguration,
+        configuration: sourceConfiguration,
+        credentialsIdentifier: credentialsConfigurationResults.credentialsIdentifier
+    };
+
     for (const streamSetPreview of sourceInspectionResults.streamSetPreviews) {
         const task = await jobContext.startTask("Inspecting Stream Set " + streamSetPreview.slug);
         const sourceStreamInspectionResults = await inspectStreamSet(
+            sourceObject,
             streamSetPreview,
             jobContext,
             sourceConfiguration,
@@ -109,19 +140,12 @@ export async function configureSource(
             // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
             schemaTitles: sourceStreamInspectionResults.schemas.map((s) => s.title!),
             streamStats: sourceStreamInspectionResults.streamStats,
-            updateMethods: sourceStreamInspectionResults.updateMethods
+            updateMethods: sourceStreamInspectionResults.updateMethods,
+            endReached: sourceStreamInspectionResults.endReached
         };
 
         streamSets.push(streamSet);
     }
-
-    const sourceObject: Source = {
-        slug: source.sourceType(),
-        streamSets,
-        type: source.sourceType(),
-        connectionConfiguration,
-        configuration: sourceConfiguration
-    };
 
     if (Object.keys(schemas).length === 0) {
         jobContext.print("ERROR", "No schemas found");
@@ -284,7 +308,7 @@ export async function renameSchemaPropertyQuestions(
                 }
             ]);
 
-            promptToRenameAttributes = renameAttributesResponse.renameAttributes !== "No";
+            promptToRenameAttributes = renameAttributesResponse.renameAttributes === true;
         } else {
             promptToRenameAttributes = true;
         }
@@ -370,7 +394,7 @@ async function schemaSpecificQuestions(jobContext: JobContext, schema: Schema) {
             }
         ]);
 
-        if (wasDerivedResponse.wasDerived === "No") break;
+        if (wasDerivedResponse.wasDerived !== true) break;
 
         const derivedFromUrlResponse = await jobContext.parameterPrompt([
             {
@@ -481,7 +505,7 @@ async function schemaSpecificQuestions(jobContext: JobContext, schema: Schema) {
 
     if (promptForNumberUnits) {
         for (const key of keys) {
-            const property = properties[key] as Schema;
+            const property = properties[key];
             const columnUnitResponse = await jobContext.parameterPrompt([
                 {
                     type: ParameterType.Text,

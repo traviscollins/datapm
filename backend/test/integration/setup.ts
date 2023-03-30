@@ -1,7 +1,7 @@
 import { GenericContainer, StartedTestContainer } from "testcontainers";
 
-import execa from "execa";
-import { ExecaChildProcess } from "execa";
+import execa, { ExecaChildProcess } from "execa";
+
 import pidtree from "pidtree";
 import { Observable } from "@apollo/client/core";
 import fs from "fs";
@@ -12,25 +12,35 @@ import { expect } from "chai";
 import { AdminHolder } from "./admin-holder";
 import { TEMP_STORAGE_PATH } from "./constants";
 import path from "path";
-// NOTE: including "datapm-client-lib" here causes a build error where suddently the response objects 
+// NOTE: including "datapm-client-lib" here causes a build error where suddently the response objects
 // in the generated graphql schema are seen as "any" type.
 
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 const maildev = require("maildev");
+
+export type MailDevEmail = { text: string; html: string; to: { address: string; name: string }[]; subject: string };
+export const tempMailDevEmail: MailDevEmail = {
+    html: "",
+    subject: "",
+    text: "",
+    to: [{ address: "", name: "" }]
+};
 
 export const dataServerPort: number = Math.floor(Math.random() * (65535 - 1024) + 1024);
 
 let container: StartedTestContainer;
 let serverProcess: ExecaChildProcess;
 let testDataServerProcess: execa.ExecaChildProcess<string>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let mailServer: any;
-export let mailObservable: Observable<any>;
+export let mailObservable: Observable<MailDevEmail>;
 
 export const TEMP_STORAGE_URL = "file://" + TEMP_STORAGE_PATH;
 const MAX_SERVER_LOG_LINES = 25;
 
 // These hold the standard out log lines from the datapm server
-export let serverLogLines: string[] = [];
-export let serverErrorLogLines: string[] = [];
+export const serverLogLines: string[] = [];
+export const serverErrorLogLines: string[] = [];
 
 /** The object logged to the console */
 export interface ActivityLogLine {
@@ -42,28 +52,26 @@ export interface ActivityLogLine {
     targetPackageIdentifier?: string;
     targetVersionNumber?: string;
     targetCatalogSlug?: string;
+    targetGroupSlug?: string;
     targetCollectionSlug?: string;
     targetUsername?: string;
     propertiesEdited?: string[];
 }
 
-
-export function findActivityLogLine(line: string, callback: (activityLogLine: ActivityLogLine) => boolean): Boolean {
+export function findActivityLogLine(line: string, callback: (activityLogLine: ActivityLogLine) => boolean): boolean {
     const lines = line.split("\n");
 
-    for(const splitLine of lines) { 
+    for (const splitLine of lines) {
         const trimmedLine = splitLine.trim();
         if (trimmedLine.length === 0 || !trimmedLine.startsWith("{")) continue;
         try {
             const lineObject = JSON.parse(trimmedLine) as ActivityLogLine;
-            if (lineObject._type == "ActivityLog" && callback(lineObject)) return true;
+            if (lineObject._type === "ActivityLog" && callback(lineObject)) return true;
         } catch (e) {
             console.log("Error parsing line: " + trimmedLine);
             console.log(e.message);
         }
     }
-
-
 
     return false;
 }
@@ -81,30 +89,34 @@ before(async function () {
         .start();
 
     const postgresPortNumber = container.getMappedPort(5432);
+    const postgresIpAddress = container.getContainerIpAddress();
 
     console.log("Postgres started");
 
     // star the maildev server
+    // eslint-disable-next-line new-cap
     mailServer = new maildev({
         smtp: 1026,
         web: 1081,
         ignoreTLS: true
     });
 
-    let mailObserver: ZenObservable.SubscriptionObserver<any>;
+    let mailObserver: ZenObservable.SubscriptionObserver<MailDevEmail>;
 
-    mailServer.listen((err: any) => {
-        mailObservable = new Observable<any>((observer) => {
+    mailServer.listen(() => {
+        mailObservable = new Observable<MailDevEmail>((observer) => {
             mailObserver = observer;
         });
     });
 
-    mailServer.on("new", function (email: any) {
+    mailServer.on("new", function (email: MailDevEmail) {
+        // console.log("Email recieved: " + email.subject);
         mailObserver.next(email);
     });
 
     serverProcess = execa("npm", ["run", "start-nowatch"], {
         env: {
+            TYPEORM_HOST: postgresIpAddress,
             TYPEORM_PORT: postgresPortNumber.toString(),
             SMTP_PORT: "1026",
             SMTP_SERVER: "localhost",
@@ -119,7 +131,7 @@ before(async function () {
         }
     });
 
-    serverProcess.stdout!.addListener("data", (chunk: Buffer) => {
+    serverProcess.stdout?.addListener("data", (chunk: Buffer) => {
         const line = chunk.toString();
 
         serverLogLines.push(line);
@@ -130,7 +142,7 @@ before(async function () {
         console.log(line);
     });
 
-    serverProcess.stderr!.addListener("data", (chunk: Buffer) => {
+    serverProcess.stderr?.addListener("data", (chunk: Buffer) => {
         const line = chunk.toString();
 
         serverErrorLogLines.push(line);
@@ -150,7 +162,6 @@ before(async function () {
         console.log("Registry server exited with code " + code + " and signal " + signal);
     });
 
-    
     const serverStartResponse = await startServerProcess(
         "Test data",
         "npm",
@@ -164,18 +175,16 @@ before(async function () {
     );
 
     testDataServerProcess = serverStartResponse.serverProcess;
-    
-        
 
     // Wait for the server to start
-    await new Promise<void>(async (r) => {
+    await new Promise<void>((resolve, reject) => {
         let serverReady = false;
 
         console.log("Waiting for server to start");
-        serverProcess.stdout!.on("data", async (buffer: Buffer) => {
+        serverProcess.stdout?.on("data", async (buffer: Buffer) => {
             const line = buffer.toString();
-            //console.log(line);
-            if (line.indexOf("🚀") != -1) {
+            // console.log(line);
+            if (line.indexOf("🚀") !== -1) {
                 console.log("Server started!");
                 serverReady = true;
 
@@ -189,15 +198,15 @@ before(async function () {
                 );
                 AdminHolder.adminUsername = "admin-user";
 
-                r();
+                resolve();
             }
         });
 
-        serverProcess.stdout!.on("error", (err: Error) => {
+        serverProcess.stdout?.on("error", (err: Error) => {
             console.error(JSON.stringify(err, null, 1));
         });
 
-        serverProcess.stdout!.on("close", () => {
+        serverProcess.stdout?.on("close", () => {
             if (!serverReady) throw new Error("Registry server exited before becoming ready");
         });
     });
@@ -214,7 +223,7 @@ describe("Server should start", async function () {
         expect(response.data.registryStatus.registryUrl).equal("http://localhost:4200");
         expect(response.data.registryStatus.status).equal(RegistryStatus.SERVING_REQUESTS);
 
-        const packageFileJson = fs.readFileSync(path.join(__dirname,"..","..","package.json"));
+        const packageFileJson = fs.readFileSync(path.join(__dirname, "..", "..", "package.json"));
         const packageFile = JSON.parse(packageFileJson.toString());
 
         expect(response.data.registryStatus.version).equal(packageFile.version);
@@ -226,12 +235,12 @@ after(async function () {
 
     const storageFolderPath = TEMP_STORAGE_URL.replace("file://", "");
 
-    if(fs.existsSync(storageFolderPath)) {
-            fs.rmSync(storageFolderPath, { recursive: true });
+    if (fs.existsSync(storageFolderPath)) {
+        fs.rmSync(storageFolderPath, { recursive: true });
     }
 
-    if(testDataServerProcess) {
-            testDataServerProcess.stdout?.destroy();
+    if (testDataServerProcess) {
+        testDataServerProcess.stdout?.destroy();
         testDataServerProcess.stderr?.destroy();
 
         if (testDataServerProcess.pid !== undefined) {
@@ -255,28 +264,27 @@ after(async function () {
         }
     }
 
-    serverProcess.stdout!.destroy();
-    serverProcess.stderr!.destroy();
+    serverProcess.stdout?.destroy();
+    serverProcess.stderr?.destroy();
 
-    if(serverProcess.pid !== undefined) {
+    if (serverProcess.pid !== undefined) {
         try {
-                let pids = pidtree(serverProcess.pid, { root: true });
+            const pids = pidtree(serverProcess.pid, { root: true });
 
-                // recursively kill all child processes
-                (await pids).forEach((p) => {
-                    console.log("Killing process " + p);
-                    try {
-                        process.kill(p);
-                    } catch (error) {
-                        console.error("Error killing process " + p);
-                        console.error(error);
-                    }
-                });
-            } catch (error) {
-                console.log("error stopping processes " + error.message);
-            }
+            // recursively kill all child processes
+            (await pids).forEach((p) => {
+                console.log("Killing process " + p);
+                try {
+                    process.kill(p);
+                } catch (error) {
+                    console.error("Error killing process " + p);
+                    console.error(error);
+                }
+            });
+        } catch (error) {
+            console.log("error stopping processes " + error.message);
+        }
     }
-    
 
     if (container) {
         await container.stop();
@@ -285,8 +293,6 @@ after(async function () {
 
     mailServer.close();
 });
-
-
 
 async function startServerProcess(
     name: string,

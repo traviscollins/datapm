@@ -23,21 +23,20 @@ export class TimeplusConnector implements Connector {
     }
 
     async getRepositoryIdentifierFromConfiguration(connectionConfiguration: DPMConfiguration): Promise<string> {
-        if (typeof connectionConfiguration.host !== "string") {
-            throw new Error("Timeplus host not set");
+        if (typeof connectionConfiguration.base !== "string") {
+            throw new Error("Timeplus base URL not set");
         }
-        return connectionConfiguration.host;
+        return connectionConfiguration.base;
     }
 
     async getCredentialsIdentifierFromConfiguration(
         _connectionConfiguration: DPMConfiguration,
         credentialsConfiguration: DPMConfiguration
     ): Promise<string | undefined> {
-        if (credentialsConfiguration.token != null) {
-            const token = credentialsConfiguration.token as string;
-            return token;
-            // only show the first 4 chars and the last 4 chars
-            // return token.substring(0, 4) + "**" + token.substring(token.length - 3);
+        if (credentialsConfiguration.apiKey != null) {
+            const apiKey = credentialsConfiguration.apiKey as string;
+            // only show the first 20 chars(key id)
+            return apiKey.substring(0, 20);
         }
 
         return undefined;
@@ -46,13 +45,14 @@ export class TimeplusConnector implements Connector {
     getConnectionParameters(connectionConfiguration: DPMConfiguration): Parameter[] | Promise<Parameter[]> {
         const parameters: Parameter[] = [];
 
-        if (connectionConfiguration.host == null) {
+        if (connectionConfiguration.base == null) {
             parameters.push({
-                name: "host",
+                name: "base",
                 type: ParameterType.Text,
                 stringMinimumLength: 1,
                 configuration: connectionConfiguration,
-                message: "Host Name(e.g. a.beta.timeplus.com)?"
+                hint: "https://us.timeplus.cloud/workspace-id",
+                message: "Base URL?"
             });
         }
 
@@ -60,18 +60,20 @@ export class TimeplusConnector implements Connector {
     }
 
     getCredentialsParameters(
-        _connectionConfiguration: DPMConfiguration,
-        authenticationConfiguration: DPMConfiguration,
+        connectionConfiguration: DPMConfiguration,
+        credentialsConfiguration: DPMConfiguration,
         jobContext: JobContext
     ): Parameter[] | Promise<Parameter[]> {
         const parameters: Parameter[] = [];
 
-        if (authenticationConfiguration.token == null) {
+        if (credentialsConfiguration.apiKey == null) {
             parameters.push({
-                configuration: authenticationConfiguration,
+                configuration: credentialsConfiguration,
                 type: ParameterType.Password,
-                name: "token",
-                message: "API Token?"
+                name: "apiKey",
+                message: "API Key?",
+                stringMinimumLength: 60,
+                stringMaximumLength: 60
             });
         }
 
@@ -87,12 +89,12 @@ export class TimeplusConnector implements Connector {
         connectionConfiguration: DPMConfiguration,
         credentialsConfiguration: DPMConfiguration
     ): Promise<string | true> {
-        const authToken = getAuthToken(credentialsConfiguration);
-        const url = `https://${connectionConfiguration.host}/api/v1beta1/streams`;
+        const apiKey = getApiKey(credentialsConfiguration);
+        const url = `${connectionConfiguration.base}/api/v1beta1/streams`;
 
         const resp = await fetch(url, {
             headers: {
-                Authorization: `Bearer ${authToken}`,
+                "X-Api-Key": apiKey,
                 Accept: "application/json"
             }
         });
@@ -104,12 +106,12 @@ export class TimeplusConnector implements Connector {
         return true;
     }
 }
-export function getAuthToken(credentialsConfiguration: DPMConfiguration): string {
-    const accessToken = credentialsConfiguration.token as string;
+export function getApiKey(credentialsConfiguration: DPMConfiguration): string {
+    const apiKey = credentialsConfiguration.apiKey as string;
 
-    if (accessToken == null) {
-        throw new Error("Timeplus token is not set.");
+    if (apiKey == null) {
+        throw new Error("Timeplus API key is not set.");
     }
 
-    return accessToken;
+    return apiKey;
 }

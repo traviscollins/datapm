@@ -14,9 +14,11 @@ import {
     Scope,
     VerifyEmailAddressDocument
 } from "datapm-client-lib";
-import { dataServerPort, mailDevWebPortNumber, registryServerPort } from "./setup";
-import { createAPIKeyFromParts } from "datapm-lib";
+import { dataServerPort, mailDevIpAddress, mailDevWebPortNumber, registryServerPort } from "./setup";
+import { createAPIKeyFromParts, loadPackageFileFromDisk, PackageFile } from "datapm-lib";
 import fetch from "cross-fetch";
+import { getDataPMHomePath, getLocalPackageLatestVersionPath } from "../../src/util/GetPackageUtil";
+import path from "path";
 
 export const KEYS = {
     ENTER: "\n",
@@ -171,7 +173,7 @@ export async function createUser(
                 const emailValidationToken = matches[1];
 
                 // Delete the email
-                request.delete(`http://localhost:${mailDevWebPortNumber}/email/${email.id}`);
+                request.delete(`http://${mailDevIpAddress}:${mailDevWebPortNumber}/email/${email.id}`);
 
                 await client.mutate({
                     mutation: VerifyEmailAddressDocument,
@@ -205,7 +207,7 @@ async function getEmail(subject: string, to: string): Promise<Email> {
 
     const startDate = new Date();
     while (emailFound === false) {
-        const response = await request.get("http://localhost:" + mailDevWebPortNumber + "/email");
+        const response = await request.get("http://" + mailDevIpAddress + ":" + mailDevWebPortNumber + "/email");
         const emails = JSON.parse(response.text) as [Email];
 
         for (const email of emails) {
@@ -464,6 +466,7 @@ export async function createTestPackage(
         ]);
         prompts.splice(6, 0, ...unitPrompts);
         await testCmd("package", options, prompts, async (line: string) => {
+            // console.log(line);
             if (line.includes("datapm fetch ")) {
                 const matches = line.match(/datapm\sfetch\s(.*)/);
                 if (matches == null) throw new Error("No matches");
@@ -471,9 +474,10 @@ export async function createTestPackage(
             }
 
             if (line.includes("datapm publish ")) {
-                const matches = line.match(/datapm\spublish\s(.*)/);
+                const matches = line.match(/datapm\spublish\slocal\/(.*)/);
                 if (matches == null) throw new Error("No matches");
-                packageFilePath = matches[1];
+                const packageSlug = matches[1];
+                packageFilePath = getLocalPackageLatestVersionPath(packageSlug);
             }
         });
         if (packageFilePath === "") {
@@ -508,11 +512,24 @@ export function writeCSVFile(fileName: string, headers: string[], records: strin
     fs.writeFileSync(fileName, content);
 }
 
+export function loadTestPackageFile(packageName: string): PackageFile {
+    if (packageName.startsWith("local/")) packageName = packageName.replace("local/", "");
+    const packagePath = getLocalPackageLatestVersionPath(packageName);
+    return loadPackageFileFromDisk(packagePath);
+}
+
+export function writeTestPackageFile(packageFile: PackageFile, packageName: string): void {
+    if (packageName.startsWith("local/")) packageName = packageName.replace("local/", "");
+    const packagePath = getLocalPackageLatestVersionPath(packageName);
+    const packageFileJSON = JSON.stringify(packageFile, null, 2);
+    fs.writeFileSync(packagePath, packageFileJSON);
+}
+
 export function removePackageFiles(packageNames: string[]): void {
     packageNames.forEach((packageName) => {
-        if (fs.existsSync(`${packageName}.datapm.json`)) fs.unlinkSync(`${packageName}.datapm.json`);
-        if (fs.existsSync(`${packageName}.README.md`)) fs.unlinkSync(`${packageName}.README.md`);
-        if (fs.existsSync(`${packageName}.LICENSE.md`)) fs.unlinkSync(`${packageName}.LICENSE.md`);
+        const packagePath = path.join(getDataPMHomePath(), "local", packageName);
+
+        if (fs.existsSync(packagePath)) fs.rmSync(packagePath, { recursive: true });
     });
 }
 

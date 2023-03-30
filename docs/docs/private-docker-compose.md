@@ -7,7 +7,6 @@ sidebar_label: Docker Compose
 You can host your own DataPM registry for private or public use. Be sure to understand the following:
 
 -   Read the [DataPM License](license.md)
--   DataPM is currently [Beta software](beta-notice.md).
 
 ## Hosting via Docker Compose
 
@@ -35,6 +34,7 @@ services:
     environment:
       - REGISTRY_NAME=Private DataPM Registry
       - REGISTRY_URL=http://localhost:4000
+      - NODEJS_ENCRYPTION_KEY=!!!!REPLACE_ME!!!
       - JWT_KEY=!!!!REPLACE_ME!!!
       - STORAGE_URL=file://var/lib/datapm-registry/data
       - TYPEORM_PORT=5432
@@ -43,7 +43,7 @@ services:
       - TYPEORM_SCHEMA=public
       - TYPEORM_USERNAME=postgres
       - TYPEORM_PASSWORD=postgres
-      - SMTP_SERVER=localhost
+      - SMTP_SERVER=smtp
       - SMTP_PORT=25
       - SMTP_USER=
       - SMTP_PASSWORD=
@@ -68,8 +68,9 @@ services:
       - POSTGRES_PASSWORD=postgres
   smtp:
     image: namshi/smtp:latest
-    ports:
-        - "25:25"
+    environment:
+        - RELAY_NETWORKS=:0.0.0.0/0
+
 
 ```
 

@@ -10,7 +10,12 @@ import {
     SchemaIdentifier,
     RecordStreamContext,
     ParameterType,
-    ValueTypes
+    ValueTypes,
+    ValueTypeStatistics,
+    DPMPropertyTypes,
+    DPMRecord,
+    Properties,
+    DPMRecordValue
 } from "datapm-lib";
 import { Transform } from "stream";
 import { JobContext } from "../../task/JobContext";
@@ -22,6 +27,8 @@ import { DISPLAY_NAME, TYPE } from "./DecodableConnectorDescription";
 import { fetch } from "cross-fetch";
 import { SemVer } from "semver";
 import { BatchingTransform } from "../../transforms/BatchingTransform";
+import moment, { MomentInput } from "moment";
+import { iam_v1 } from "googleapis";
 
 type DecodableConnection = {
     id: string;
@@ -140,7 +147,7 @@ export class DecodableSink implements Sink {
                         name: "connection-name-" + schema.title,
                         configuration,
                         message: "Connection for " + schema.title + " records?",
-                        defaultValue: decodableStreamName
+                        defaultValue: configuration["stream-name-" + schema.title] as string
                     }
                 ];
             }
@@ -237,7 +244,7 @@ export class DecodableSink implements Sink {
             },
             outputLocation: `https://${connectionConfiguration.account}.api.decodable.co/v1alpha2/streams`,
             lastOffset: undefined,
-            transforms: [new BatchingTransform(100, 100)],
+            transforms: [new BatchingTransform(1, 100)],
             writable: new Transform({
                 objectMode: true,
                 transform: async (
@@ -248,11 +255,20 @@ export class DecodableSink implements Sink {
                     const events = records.map((r) => {
                         const record = r.recordContext.record;
                         if (configuration["event-time-" + schema.title] === RECIEVE_TIME) {
-                            record[RECIEVE_TIME] = r.recordContext.receivedDate;
+                            record[RECIEVE_TIME] = r.recordContext.receivedDate.toISOString();
                         }
 
                         return record;
                     });
+
+                    for (const event of events) {
+                        makeDecodableSafeObjects(schema.properties, event);
+                    }
+
+                    const body = JSON.stringify({
+                        events
+                    });
+
                     const response = await fetch(
                         `https://${connectionConfiguration.account}.api.decodable.co/v1alpha2/connections/${connectionId}/events`,
                         {
@@ -262,17 +278,15 @@ export class DecodableSink implements Sink {
                                 "Content-Type": "application/json",
                                 Accept: "application/json"
                             },
-                            body: JSON.stringify({
-                                events
-                            })
+                            body
                         }
                     );
 
                     if (response.status !== 202) {
+                        const jsonText = await response.json();
+
                         callback(
-                            new Error(
-                                `Unexpected response status ${response.status} body ${JSON.stringify(response.text())}`
-                            )
+                            new Error(`Unexpected response status ${response.status} body ${JSON.stringify(jsonText)}`)
                         );
                         return;
                     }
@@ -574,22 +588,39 @@ export class DecodableSink implements Sink {
 
             return {
                 name: property.title,
-                type: this.getDecodableType(property.types)
+                type: getDecodableType(property.types)
             };
         });
 
         if (configuration["event-time-" + schema.title] === RECIEVE_TIME) {
             decodableSchema.push({
                 name: RECIEVE_TIME,
-                type: "TIMESTAMP(3)"
+                type: "TIMESTAMP_LTZ(3)"
             });
         }
 
         return decodableSchema;
     }
+}
 
-    getDecodableType(types: ValueTypes): string {
-        const removedNull = Object.keys(types).filter((t) => t !== "null");
+function makeDecodableSafeObjects(properties: Properties, object: DPMRecord): void {
+    for (const key of Object.keys(properties)) {
+        const property = properties[key];
+
+        if (property == null) {
+            throw new Error("Schema property " + key + " is not found");
+        }
+
+        if (property.title == null) {
+            throw new Error("Schema property " + key + " must have a title");
+        }
+
+        if (object[property.title] === undefined) {
+            object[property.title] = null;
+            continue;
+        }
+
+        const removedNull = Object.keys(property.types).filter((t) => t !== "null");
 
         if (removedNull.length > 1) {
             throw new Error("Decodable Sink does not support schemas with more than one type");
@@ -601,39 +632,118 @@ export class DecodableSink implements Sink {
 
         const type = removedNull[0];
 
-        if (type === "string") {
-            return "STRING";
+        if (type === "object") {
+            const valueType = property.types.object;
+
+            makeDecodableSafeObjects(valueType?.objectProperties as Properties, object[property.title] as DPMRecord);
         }
 
-        if (type === "number") {
-            // TODO support Double vs. Decimal decision
-            // by comparing max and min value range vs
-            // scale of the number to determine if they would
-            // be outside the range of Decimal (exact). Could
-            // then use double (approximate)
-            const scale = types[type]?.numberMaxScale ?? 0;
-            const precision = 31;
-            return `DECIMAL(${precision},${scale})`;
-        }
+        if (type === "array") {
+            const valueType = property.types.array;
 
-        if (type === "integer") {
-            return "BIGINT";
-        }
-
-        if (type === "boolean") {
-            return "BOOLEAN";
-        }
-
-        if (type === "date") {
-            return "DATE";
+            if (valueType?.arrayTypes?.object != null) {
+                for (const arrayValue of object[property.title] as Array<DPMRecord>) {
+                    makeDecodableSafeObjects(valueType?.arrayTypes?.object.objectProperties as Properties, arrayValue);
+                }
+            }
         }
 
         if (type === "date-time") {
-            // Currently sets to TIMESTAMP(3) because
-            // upstream processing converts to javascript Date
-            // object, which automatically truncates to 3 digits
-            return "TIMESTAMP(3)";
+            const value = object[property.title];
+            const momentValue = moment(value as MomentInput);
+
+            object[property.title] = momentValue.toISOString();
         }
-        throw new Error("Unsupported Decodable Sink: " + removedNull[0]);
+
+        if (type === "date") {
+            // YYYY-MM-DD
+            const value = object[property.title];
+            const momentValue = moment(value as MomentInput);
+
+            object[property.title] = momentValue.format(moment.HTML5_FMT.DATE);
+        }
     }
+}
+
+export function getDecodableType(types: ValueTypes): string {
+    const removedNull = Object.keys(types).filter((t) => t !== "null");
+
+    if (removedNull.length > 1) {
+        throw new Error("Decodable Sink does not support schemas with more than one type");
+    }
+
+    if (removedNull.length === 0) {
+        throw new Error("column has no value types");
+    }
+
+    const type = removedNull[0];
+    const valueStats = types[type as DPMPropertyTypes] as ValueTypeStatistics;
+
+    if (valueStats == null) throw new Error("type " + type + " has no statistics");
+
+    if (type === "string") {
+        return "STRING";
+    }
+
+    if (type === "number") {
+        // TODO support Double vs. Decimal decision
+        // by comparing max and min value range vs
+        // scale of the number to determine if they would
+        // be outside the range of Decimal (exact). Could
+        // then use double (approximate)
+        const scale = types[type]?.numberMaxScale ?? 0;
+        const precision = 31;
+        return `DECIMAL(${precision},${scale})`;
+    }
+
+    if (type === "integer") {
+        return "BIGINT";
+    }
+
+    if (type === "boolean") {
+        return "BOOLEAN";
+    }
+
+    if (type === "date") {
+        return "DATE";
+    }
+
+    if (type === "date-time") {
+        // Currently sets to TIMESTAMP_LTZ(3) because
+        // upstream processing converts to javascript Date
+        // object, which automatically truncates to 3 digits
+        return "TIMESTAMP_LTZ(3)";
+    }
+
+    if (type === "array") {
+        if (valueStats.arrayTypes == null) throw new Error("array type has no defined array types");
+
+        return "ARRAY<" + getDecodableType(valueStats.arrayTypes) + ">";
+    }
+
+    if (type === "object") {
+        if (valueStats.objectProperties == null) throw new Error("object type has no defined properties");
+
+        let propertiesString = "ROW(";
+
+        const keys = Object.keys(valueStats.objectProperties);
+
+        for (let i = 0; i < keys.length; i++) {
+            const propertyKey = keys[i];
+            const property = valueStats.objectProperties[propertyKey];
+            const typeString = getDecodableType(property.types);
+
+            propertiesString += `${propertyKey} ${typeString}`;
+
+            // if (property.description != null) propertiesString += `'${property.description}'`;
+
+            if (i < keys.length - 1) propertiesString += ", ";
+        }
+
+        propertiesString += ")";
+
+        return propertiesString;
+    }
+
+    throw new Error("Unsupported type for Decodable Sink: " + removedNull[0]);
 }

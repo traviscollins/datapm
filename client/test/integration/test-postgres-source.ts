@@ -1,6 +1,6 @@
 import { expect } from "chai";
-import { loadPackageFileFromDisk, Properties } from "datapm-lib";
-import Knex from "knex";
+import { Properties } from "datapm-lib";
+import knex, { Knex } from "knex";
 import { GenericContainer, StartedTestContainer } from "testcontainers";
 import { LogWaitStrategy } from "testcontainers/dist/wait-strategy";
 import { SourceErrors } from "datapm-client-lib";
@@ -9,6 +9,7 @@ import {
     createTestPackage,
     getPromptInputs,
     KEYS,
+    loadTestPackageFile,
     PromptInput,
     removePackageFiles,
     testCmd,
@@ -50,7 +51,7 @@ describe("Postgres Source Test", function () {
         this.timeout(200000);
 
         console.log("Starting postgres source container");
-        postgresContainer = await new GenericContainer("postgres")
+        postgresContainer = await new GenericContainer("postgres", "13.3")
             .withEnv("POSTGRES_PASSWORD", "postgres")
             .withEnv("POSTGRES_DB", "datapm")
             .withTmpFs({ "/temp_pgdata": "rw,noexec,nosuid,size=65536k" })
@@ -61,7 +62,7 @@ describe("Postgres Source Test", function () {
         postgresHost = postgresContainer.getContainerIpAddress();
         postgresPort = postgresContainer.getMappedPort(5432);
 
-        knexClient = Knex({
+        knexClient = knex({
             client: "pg",
             connection: {
                 host: postgresHost,
@@ -88,7 +89,7 @@ describe("Postgres Source Test", function () {
                 ""
             ])
         ];
-        const exitCode = await testCmd("fetch", [packageAFilePath, "--sink", "postgres"], prompts);
+        const exitCode = await testCmd("fetch", [packageAFilePath, "--sinkType", "postgres"], prompts);
 
         expect(exitCode.code).to.equal(0);
     });
@@ -176,13 +177,16 @@ describe("Postgres Source Test", function () {
     });
 
     it("Validate the contents of the JSON file", async function () {
-        const newPackageFile = loadPackageFileFromDisk("covid-02-01-2020.datapm.json");
+        const newPackageFile = loadTestPackageFile("covid-02-01-2020");
         const columns = await knexClient("information_schema.columns").where({ table_name: "covid-02-01-2020" });
         const typeMatch: Record<string, Record<string, [string]>> = {
             boolean: {
                 type: ["boolean"]
             },
             bigint: {
+                type: ["string"]
+            },
+            integer: {
                 type: ["integer"]
             },
             real: {
@@ -212,7 +216,7 @@ describe("Postgres Source Test", function () {
         const prompts: PromptInput[] = [
             {
                 message: "Repository?",
-                input: "localhost" + KEYS.ENTER
+                input: postgresHost + KEYS.ENTER
             },
             {
                 message: "Credentials?",
@@ -266,7 +270,8 @@ describe("Postgres Source Test", function () {
             messageFound: false
         };
 
-        const cmdResult = await testCmd("fetch", ["postgres.datapm.json"], prompts, async (line: string) => {
+        const cmdResult = await testCmd("fetch", ["local/covid-02-01-2020"], prompts, async (line: string) => {
+            // console.log(line);
             if (line.includes("datapm fetch ")) {
                 results.messageFound = true;
             }

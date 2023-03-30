@@ -4,7 +4,6 @@
             "quick-start",
             "concepts",
             "about",
-            "beta-notice",
             "unclaimed-listings",
             "license"
         ],
@@ -18,6 +17,7 @@
             "command-line-client",
             "package-files",
             "connectors",
+            "access-control",
             "registry-api",
             "private-registry"
         ]

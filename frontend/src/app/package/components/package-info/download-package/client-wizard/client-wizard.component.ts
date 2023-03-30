@@ -7,7 +7,8 @@ import { AuthenticationService } from "src/app/services/authentication.service";
 import { ApiKeyService } from "src/app/services/api-key.service";
 import { SnackBarService } from "src/app/services/snackBar.service";
 import { Clipboard } from "@angular/cdk/clipboard";
-import { User } from "src/generated/graphql";
+import { CurrentUser, Package, User } from "src/generated/graphql";
+import { packageToIdentifier } from "src/app/helpers/IdentifierHelper";
 
 @Component({
     selector: "app-client-wizard",
@@ -16,10 +17,10 @@ import { User } from "src/generated/graphql";
 })
 export class ClientWizardComponent implements OnInit {
     public currentIndex: number = 0;
-    public currentUser: User;
+    public currentUser: CurrentUser;
 
     username: string;
-    packageUrl: string;
+    package: Package;
     registryUrl: string;
 
     hasApiKeys = false;
@@ -40,17 +41,15 @@ export class ClientWizardComponent implements OnInit {
 
         this.loading = true;
         combineLatest([this.apiKeysService.getMyApiKeys(), this.pacakgeService.package]).subscribe(([apiKeys, pkg]) => {
-            this.packageUrl = this.packageUrl =
-                this.registryUrl + "/" + pkg.package.identifier.catalogSlug + "/" + pkg.package.identifier.packageSlug;
+            this.package = pkg.package;
 
-            let user = this.authenticationService.currentUser.value;
-            if (user) {
-                this.username = user.username;
-                this.currentUser = user;
+            let currentUser = this.authenticationService.currentUser.value;
+            if (currentUser) {
+                this.username = currentUser.user.username;
+                this.currentUser = currentUser;
             } else {
                 this.username = "username";
             }
-
         });
     }
 
@@ -112,11 +111,15 @@ export class ClientWizardComponent implements OnInit {
     }
 
     copyDataFetch() {
-        this.copyToClipboard("datapm fetch " + this.packageUrl);
+        this.copyToClipboard("datapm fetch " + this.getPackageIdentifier());
     }
 
     copyToClipboard(text) {
         this.clipboard.copy(text);
         this.snackBarService.openSnackBar("copied to clipboard!", "");
+    }
+
+    getPackageIdentifier() {
+        return packageToIdentifier(this.package.identifier);
     }
 }

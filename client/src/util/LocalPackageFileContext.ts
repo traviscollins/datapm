@@ -1,13 +1,19 @@
 import { PackageFile } from "datapm-lib";
-import { Writable } from "stream";
 import { JobContext, CantSaveReasons } from "datapm-client-lib";
 import { PackageFileWithContext } from "datapm-client-lib/src/util/PackageContext";
 import fs from "fs";
+import os from "os";
 import path from "path";
+import { SemVer } from "semver";
 
 export class LocalPackageFileContext implements PackageFileWithContext {
     // eslint-disable-next-line no-useless-constructor
-    constructor(public jobContext: JobContext, public packageFile: PackageFile, public packageFilePath: string) {}
+    constructor(
+        public jobContext: JobContext,
+        public packageFile: PackageFile,
+        public filePath: string | undefined,
+        public catalogSlug: string | undefined
+    ) {}
 
     get contextType(): "localFile" {
         return "localFile";
@@ -18,9 +24,18 @@ export class LocalPackageFileContext implements PackageFileWithContext {
     }
 
     get hasPermissionToSave(): boolean {
-        const fileStats = fs.statSync(this.packageFileUrl);
+        const fileLocation = generatePackageFileLocation(this.basePath(), this.baseFileName());
 
-        return !!parseInt((fileStats.mode & parseInt("777", 8)).toString(8)[0]);
+        if (fs.existsSync(fileLocation)) {
+            const fileStats = fs.statSync(fileLocation);
+
+            return !!parseInt((fileStats.mode & parseInt("777", 8)).toString(8)[0]);
+        } else {
+            const dirName = path.dirname(fileLocation);
+
+            if (!fs.existsSync(dirName)) fs.mkdirSync(dirName, { recursive: true });
+            return true;
+        }
     }
 
     get cantSaveReason(): CantSaveReasons | false {
@@ -31,8 +46,12 @@ export class LocalPackageFileContext implements PackageFileWithContext {
         return false;
     }
 
-    get packageFileUrl(): string {
-        return this.packageFilePath;
+    get packageReference(): string {
+        if (this.catalogSlug === "local") return "local/" + this.packageFile.packageSlug;
+
+        if (this.filePath == null) throw new Error("filePath not defined, and catalog is not local");
+
+        return this.filePath;
     }
 
     get readmeFileUrl(): string | undefined {
@@ -46,7 +65,7 @@ export class LocalPackageFileContext implements PackageFileWithContext {
     async save(packageFile: PackageFile): Promise<void> {
         let task = await this.jobContext.startTask("Writing README file...");
         try {
-            const readmeFileLocation = await writeReadmeFile(undefined, packageFile);
+            const readmeFileLocation = await this.writeReadmeFile(packageFile);
             await task.end("SUCCESS", `Wrote README file ${readmeFileLocation}`);
         } catch (error) {
             await task.end("ERROR", `Unable to write the README file: ${error.message}`);
@@ -55,7 +74,7 @@ export class LocalPackageFileContext implements PackageFileWithContext {
 
         task = await this.jobContext.startTask("Writing LICENSE file...");
         try {
-            const licenseFileLocation = await writeLicenseFile(undefined, packageFile);
+            const licenseFileLocation = await this.writeLicenseFile(packageFile);
             await task.end("SUCCESS", `Wrote LICENSE file ${licenseFileLocation}`);
         } catch (error) {
             await task.end("ERROR", `Unable to write the LICENSE file: ${error.message}`);
@@ -65,77 +84,109 @@ export class LocalPackageFileContext implements PackageFileWithContext {
         task = await this.jobContext.startTask("Writing package file...");
 
         try {
-            await writePackageFile(undefined, packageFile, this.packageFilePath);
+            const packageFileLocation = await this.writePackageFile(packageFile);
 
-            await task.end("SUCCESS", `Wrote package file ${this.packageFilePath}`);
+            await task.end("SUCCESS", `Wrote package file ${packageFileLocation}`);
         } catch (error) {
             await task.end("ERROR", `Unable to write the package file: ${error.message}`);
             throw error;
         }
     }
-}
 
-async function writePackageFile(
-    catalogSlug: string | undefined,
-    packageFile: PackageFile,
-    path: string
-): Promise<void> {
-    const json = JSON.stringify(packageFile, null, " ");
-
-    const writeStream = fs.createWriteStream(path);
-
-    await writeFile(writeStream, json);
-}
-
-async function writeReadmeFile(catalogSlug: string | undefined, packageFile: PackageFile): Promise<string> {
-    const contents =
-        packageFile.readmeMarkdown != null
-            ? packageFile.readmeMarkdown
-            : `# ${packageFile.displayName}\n \n ${packageFile.description}`;
-
-    const readmeFileLocation =
-        packageFile.readmeFile != null
-            ? packageFile.readmeFile
-            : path.join(process.cwd(), packageFile.packageSlug + ".README.md");
-
-    const writable = fs.createWriteStream(readmeFileLocation);
-
-    await writeFile(writable, contents);
-
-    delete packageFile.readmeMarkdown;
-
-    return readmeFileLocation;
-}
-
-async function writeLicenseFile(catalogSlug: string | undefined, packageFile: PackageFile): Promise<string> {
-    const contents =
-        typeof packageFile.licenseMarkdown === "string"
-            ? (packageFile.licenseMarkdown as string)
-            : "# License\n\nLicense not defined. Contact author.";
-
-    const licenseFileLocation =
-        packageFile.licenseFile != null
-            ? packageFile.licenseFile
-            : path.join(process.cwd(), packageFile.packageSlug + ".LICENSE.md");
-
-    const writable = fs.createWriteStream(licenseFileLocation);
-
-    await writeFile(writable, contents);
-
-    delete packageFile.licenseMarkdown;
-
-    return licenseFileLocation;
-}
-
-async function writeFile(writable: Writable, contents: string) {
-    return new Promise<void>((resolve, reject) => {
-        writable.write(contents, (err) => {
-            writable.end();
-            if (err) {
-                reject(err);
-            } else {
-                resolve();
+    basePath(): string {
+        if (this.filePath) {
+            if (this.filePath.startsWith("~")) {
+                this.filePath = this.filePath.replace(/^~/, os.homedir());
             }
-        });
-    });
+
+            if (fs.existsSync(this.filePath)) {
+                const stats = fs.statSync(this.filePath);
+
+                if (stats.isDirectory()) {
+                    return this.filePath;
+                }
+            }
+
+            if (this.filePath.endsWith(".json")) return path.dirname(this.filePath);
+
+            return this.filePath.replace(/[\\/]$/, ""); // remove ending separators
+        }
+
+        const majorVersion = new SemVer(this.packageFile.version).major.toString();
+        return path.join(
+            os.homedir(),
+            "datapm",
+            "data",
+            this.catalogSlug ?? "local",
+            this.packageFile.packageSlug,
+            majorVersion
+        );
+    }
+
+    baseFileName(): string {
+        if (this.filePath) {
+            if (fs.existsSync(this.filePath)) {
+                const stats = fs.statSync(this.filePath);
+                if (stats.isFile()) {
+                    const parts = this.filePath.split(path.sep);
+                    const fileName = parts[parts.length - 1];
+                    return fileName.replace(".datapm.json", "");
+                }
+            }
+        }
+
+        return this.packageFile.packageSlug + "-" + this.packageFile.version;
+    }
+
+    async writePackageFile(packageFile: PackageFile): Promise<string> {
+        const json = JSON.stringify(packageFile, null, " ");
+
+        if (!fs.existsSync(this.basePath())) fs.mkdirSync(this.basePath(), { recursive: true });
+
+        const packageFileLocation = generatePackageFileLocation(this.basePath(), this.baseFileName());
+
+        fs.writeFileSync(packageFileLocation, json);
+
+        return packageFileLocation;
+    }
+
+    async writeReadmeFile(packageFile: PackageFile): Promise<string> {
+        const basePath = this.basePath();
+
+        if (!fs.existsSync(basePath)) fs.mkdirSync(basePath, { recursive: true });
+
+        const readmeFileName = packageFile.readmeFile ? packageFile.readmeFile : packageFile.packageSlug + ".README.md";
+        const readmeFileLocation = path.join(basePath, readmeFileName);
+
+        if (packageFile.readmeMarkdown) {
+            fs.writeFileSync(readmeFileLocation, packageFile.readmeMarkdown);
+
+            delete packageFile.readmeMarkdown;
+            packageFile.readmeFile = readmeFileName;
+        }
+
+        return readmeFileLocation;
+    }
+
+    async writeLicenseFile(packageFile: PackageFile): Promise<string> {
+        const basePath = this.basePath();
+
+        if (!fs.existsSync(basePath)) fs.mkdirSync(basePath, { recursive: true });
+
+        const licenseFile = packageFile.licenseFile ? packageFile.licenseFile : packageFile.packageSlug + ".LICENSE.md";
+        const licenseFileLocation = path.join(basePath, licenseFile);
+
+        if (packageFile.licenseMarkdown) {
+            fs.writeFileSync(licenseFileLocation, packageFile.licenseMarkdown);
+
+            delete packageFile.licenseMarkdown;
+            packageFile.licenseFile = licenseFile;
+        }
+
+        return licenseFileLocation;
+    }
+}
+
+function generatePackageFileLocation(basePath: string, baseFileName: string): string {
+    return path.join(basePath, baseFileName + ".datapm.json");
 }

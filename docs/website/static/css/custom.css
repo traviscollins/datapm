@@ -15,12 +15,6 @@ body {
     background-color: var(--body-background);
 }
 
-.beta {
-    color: red !important;
-    font-size: 12px;
-    display: inline !important;
-}
-
 .navigationSlider .slidingNav ul li {
     box-shadow: none;
     border: 1px solid var(--lightgray-2-color);
@@ -397,7 +391,7 @@ table tr:nth-child(even) {
 }
 
 .fixedHeaderContainer {
-    padding: 25px 0px 10px; /** Remove bottom padding after removing beta banner */
+    padding: 25px 0px 10px;
     background-color: var(--body-background);
     background: var(--body-background);
     box-shadow: none;
@@ -410,6 +404,7 @@ table tr:nth-child(even) {
     font-style: normal;
     font-weight: 400;
     line-height: 46px;
+    letter-spacing: 0.4px;
     color: var(--gray-1-color);
     cursor: pointer;
 }

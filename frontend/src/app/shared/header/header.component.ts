@@ -1,17 +1,17 @@
 import { Component, OnInit, OnDestroy } from "@angular/core";
 import { ActivatedRoute, ParamMap, Router } from "@angular/router";
 import { FormControl } from "@angular/forms";
-import { takeUntil, startWith, map, filter, debounceTime, switchMap } from "rxjs/operators";
-import { Subject, Observable, BehaviorSubject } from "rxjs";
+import { takeUntil, debounceTime, switchMap } from "rxjs/operators";
+import { Subject } from "rxjs";
 
 import { AuthenticationService } from "../../services/authentication.service";
 import { DialogService } from "../../services/dialog/dialog.service";
-import { AutoCompleteGQL, AutoCompleteResult, User } from "src/generated/graphql";
+import { AutoCompleteGQL, AutoCompleteResult, CurrentUser } from "src/generated/graphql";
 import { MatDialog } from "@angular/material/dialog";
 import { LoginDialogComponent } from "./login-dialog/login-dialog.component";
 import { SignUpDialogComponent } from "./sign-up-dialog/sign-up-dialog.component";
 import { ForgotPasswordDialogComponent } from "./forgot-password-dialog/forgot-password-dialog.component";
-
+import { CreatePackageModalComponent } from "../command-modal/package/create-package-modal.component";
 enum State {
     INIT,
     LOADING,
@@ -32,7 +32,7 @@ interface Option {
 export class HeaderComponent implements OnInit, OnDestroy {
     state = State.INIT;
 
-    currentUser: User;
+    currentUser: CurrentUser;
     searchControl: FormControl;
     private subscription = new Subject();
 
@@ -72,7 +72,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
         this.route.queryParamMap.pipe(takeUntil(this.subscription)).subscribe((queryParams: ParamMap) => {
             this.searchControl.setValue(queryParams.get("q") || "");
         });
-        this.authenticationService.currentUser.pipe(takeUntil(this.subscription)).subscribe((user: User) => {
+        this.authenticationService.currentUser.pipe(takeUntil(this.subscription)).subscribe((user: CurrentUser) => {
             this.currentUser = user;
             if (user) {
                 this.state = State.SUCCESS;
@@ -141,7 +141,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
     }
 
     public goToMyDetails(): void {
-        this.router.navigate([this.currentUser?.username]);
+        this.router.navigate([this.currentUser?.user.username]);
     }
 
     public logout(): void {
@@ -159,4 +159,23 @@ export class HeaderComponent implements OnInit, OnDestroy {
         this.searchControl.setValue("");
         this.autoCompleteResult = null;
     }
+
+    public async publishClicked(): Promise<void> {
+        if (!this.currentUser) this.dialog.openLoginDialog();
+
+        // TODO would be better to return an observable that allows us to open the
+        // publish dialog after successful login
+
+        const dialogRef = this.matDialog
+            .open(CreatePackageModalComponent, {
+                data: {
+                    targetCatalogSlug: this.currentUser.user.username
+                },
+                disableClose: true
+            })
+            .afterClosed()
+            .subscribe(() => {});
+    }
+
+
 }

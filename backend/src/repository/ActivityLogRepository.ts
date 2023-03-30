@@ -1,13 +1,14 @@
-import { Connection, EntityManager, EntityRepository, In, Repository } from "typeorm";
+import { Connection, DeepPartial, EntityManager, EntityRepository, In, Repository } from "typeorm";
 import { ActivityLogEntity } from "../entity/ActivityLogEntity";
 import { CatalogEntity } from "../entity/CatalogEntity";
 import { CollectionEntity } from "../entity/CollectionEntity";
 import { DataBatchEntity } from "../entity/DataBatchEntity";
 import { FollowEntity } from "../entity/FollowEntity";
+import { GroupEntity } from "../entity/GroupEntity";
 import { PackageEntity } from "../entity/PackageEntity";
 import { UserEntity } from "../entity/UserEntity";
 import { VersionEntity } from "../entity/VersionEntity";
-import { ActivityLogChangeType, ActivityLogEventType } from "../generated/graphql";
+import { ActivityLogChangeType, ActivityLogEventType, Permission } from "../generated/graphql";
 
 export interface ActivityLogTemp {
     userId?: number;
@@ -19,15 +20,20 @@ export interface ActivityLogTemp {
     targetCatalogId?: number;
     targetCollectionId?: number;
     targetUserId?: number;
+    targetGroupId?: number;
     targetDataBatchId?: number;
     propertiesEdited?: string[];
     removedItemName?: string;
     removedItemId?: number;
-    additionalProperties?: { [key: string]: any };
+    permissions?: Permission[];
+    additionalProperties?: { [key: string]: unknown };
 }
 
 /** Creates a new ActivityLog entry in the database, and logs it */
-export async function createActivityLog(connection: EntityManager | Connection, activityLogTemp: ActivityLogTemp) {
+export async function createActivityLog(
+    connection: EntityManager | Connection,
+    activityLogTemp: ActivityLogTemp
+): Promise<void> {
     const activityLog = new ActivityLogEntity();
     activityLog.eventType = activityLogTemp.eventType;
     activityLog.changeType = activityLogTemp.changeType;
@@ -37,10 +43,13 @@ export async function createActivityLog(connection: EntityManager | Connection, 
     activityLog.targetPackageVersionId = activityLogTemp.targetPackageVersionId;
     activityLog.targetCatalogId = activityLogTemp.targetCatalogId;
     activityLog.targetCollectionId = activityLogTemp.targetCollectionId;
+    activityLog.targetUserId = activityLogTemp.targetUserId;
+    activityLog.targetGroupId = activityLogTemp.targetGroupId;
     activityLog.propertiesEdited = activityLogTemp.propertiesEdited;
     activityLog.removedItemName = activityLogTemp.removedItemName;
     activityLog.removedItemId = activityLogTemp.removedItemId;
     activityLog.additionalProperties = activityLogTemp.additionalProperties;
+    activityLog.permissions = activityLogTemp.permissions;
 
     if (activityLogTemp.userId) {
         const user = await connection.getRepository(UserEntity).findOneOrFail({ id: activityLogTemp.userId });
@@ -80,6 +89,12 @@ export async function createActivityLog(connection: EntityManager | Connection, 
         activityLog.targetCollectionSlug = collection.collectionSlug;
     }
 
+    if (activityLogTemp.targetUserId) {
+        const user = await connection.getRepository(UserEntity).findOneOrFail({ id: activityLogTemp.targetUserId });
+
+        activityLog.targetUsername = user.username;
+    }
+
     if (activityLogTemp.targetDataBatchId) {
         const batchEntity = await connection
             .getRepository(DataBatchEntity)
@@ -88,27 +103,33 @@ export async function createActivityLog(connection: EntityManager | Connection, 
         activityLog.targetBatchNumber = batchEntity.batch;
     }
 
+    if (activityLogTemp.targetGroupId) {
+        const group = await connection.getRepository(GroupEntity).findOneOrFail({ id: activityLogTemp.targetGroupId });
+        activityLog.targetGroupSlug = group.slug;
+    }
+
     await connection.getCustomRepository(ActivityLogRepository).createLog(activityLog);
 }
 @EntityRepository(ActivityLogEntity)
 export class ActivityLogRepository extends Repository<ActivityLogEntity> {
     async createLog(activityLog: ActivityLogEntity): Promise<void> {
-
         if (process.env.ACTIVITY_LOG !== "false")
-                console.info(
-                    JSON.stringify({
-                        _type: "ActivityLog",
-                        date: new Date().toISOString(),
-                        ...activityLog
-                    })
-                );
+            console.info(
+                JSON.stringify({
+                    _type: "ActivityLog",
+                    date: new Date().toISOString(),
+                    ...activityLog
+                })
+            );
 
-        if(activityLog.userId == null) {
+        if (activityLog.userId == null) {
             return;
         }
 
         return this.manager.nestedTransaction(async (transaction) => {
-            const entity = transaction.create(ActivityLogEntity, activityLog);
+            const entity = await transaction
+                .getRepository(ActivityLogEntity)
+                .save(activityLog as DeepPartial<ActivityLogEntity>);
             if (
                 activityLog.eventType !== ActivityLogEventType.PACKAGE_DELETED &&
                 activityLog.eventType !== ActivityLogEventType.PACKAGE_ISSUE_DELETED &&

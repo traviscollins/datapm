@@ -1,5 +1,5 @@
 import "./util/prototypeExtensions";
-import { GraphQLScalarType } from "graphql";
+import { GraphQLResolveInfo, GraphQLScalarType } from "graphql";
 import { getUserByUserName, UserRepository } from "./repository/UserRepository";
 import { AuthenticatedContext, AutoCompleteContext, Context } from "./context";
 import { PackageRepository } from "./repository/PackageRepository";
@@ -20,13 +20,15 @@ import {
     FollowResolvers,
     ActivityLogResolvers,
     BuilderIOSettings,
-    BuilderIOPage
+    BuilderIOPage,
+    GroupResolvers,
+    UserStatus
 } from "./generated/graphql";
 import { getGraphQlRelationName, getRelationNames } from "./util/relationNames";
 import { CatalogRepository } from "./repository/CatalogRepository";
 import { UserCatalogPermissionRepository } from "./repository/CatalogPermissionRepository";
-import { isRequestingUserOrAdmin } from "./util/contextHelpers";
-import { DATAPM_VERSION, parsePackageFileJSON, validatePackageFile } from "datapm-lib";
+import { isAuthenticatedAsAdmin, isRequestingUserOrAdmin } from "./util/contextHelpers";
+import { DATAPM_VERSION, parsePackageFileJSON } from "datapm-lib";
 import graphqlFields from "graphql-fields";
 import {
     addPackageToCollection,
@@ -92,7 +94,7 @@ import {
     adminSearchUsers,
     adminDeleteUser,
     adminSetUserStatus,
-    getUserFromCacheOrDbByUsername
+    getUserFromCacheOrDbByUsernameOrFail
 } from "./resolvers/UserResolver";
 import { createAPIKey, deleteAPIKey, myAPIKeys } from "./resolvers/ApiKeyResolver";
 import {
@@ -127,6 +129,9 @@ import {
     movePackage,
     packageUpdateMethods
 } from "./resolvers/PackageResolver";
+
+import { createCredential, deleteCredential } from "./resolvers/CredentialResolver";
+import { createRepository, listRepositories, deleteRepository } from "./resolvers/RepositoryResolver";
 
 import { validatePassword } from "./directive/ValidPasswordDirective";
 import { validateCatalogSlug } from "./directive/ValidCatalogSlugDirective";
@@ -165,10 +170,12 @@ import {
     logAuthor,
     logCatalog,
     logCollection,
+    logGroup,
     logId,
     logPackage,
     logPackageIssue,
     logPropertiesEdited,
+    logUser,
     myActivity,
     myFollowingActivity,
     packageActivities
@@ -214,6 +221,27 @@ import {
 } from "./resolvers/FollowResolver";
 
 import {
+    createGroup,
+    updateGroup,
+    deleteGroup,
+    addOrUpdateUserToGroup,
+    removeUserFromGroup,
+    myGroupPermissions,
+    myGroups,
+    group,
+    setGroupAsAdmin,
+    adminSearchGroups,
+    adminDeleteGroup,
+    groupUsers
+} from "./resolvers/GroupResolver";
+import {
+    addOrUpdateGroupToPackage,
+    removeGroupFromPackage,
+    groupsByPackage,
+    packagePermissionsByGroupForUser
+} from "./resolvers/GroupPackagePermissionResolver";
+
+import {
     getPlatformSettingsByKey,
     getDeserializedPublicPlatformSettingsByKey,
     getPublicPlatformSettingsByKeyOrFail,
@@ -221,42 +249,62 @@ import {
 } from "./resolvers/PlatformSettingsResolver";
 
 import { runJob } from "./resolvers/JobResolver";
+import {
+    addOrUpdateGroupToCatalog,
+    removeGroupFromCatalog,
+    groupsByCatalog,
+    catalogPermissionsByGroupForUser
+} from "./resolvers/GroupCatalogPermissionResolver";
+import {
+    addOrUpdateGroupToCollection,
+    removeGroupFromCollection,
+    groupsByCollection,
+    collectionPermissionsByGroupForUser
+} from "./resolvers/GroupCollectionPermissionResolver";
+import { me } from "./resolvers/MeResolver";
+import { Catalog } from "datapm-client-lib";
+import { getEnvVariable } from "./util/getEnvVariable";
+
+import { listConnectors } from "./resolvers/ConnectorsResolver";
 
 export const getPageContentByRoute = async (
-    _0: any,
+    _0: unknown,
     { route }: { route: string },
     context: AuthenticatedContext,
-    info: any
-) => {
+    info: GraphQLResolveInfo
+): Promise<{
+    user?: User;
+    catalog?: Catalog;
+    builderIOPage?: BuilderIOPage;
+}> => {
     const user = await getUserByUserName({ username: route, manager: context.connection.manager });
     if (user) {
         return { user };
     }
 
-    const catalog = await getCatalogByIdentifier(_0, { identifier: { catalogSlug: route } }, context, null);
+    const graphqlFields2 = graphqlFields(info);
+    const catalogRelations = getRelationNames(graphqlFields2.catalog);
+    const catalog = await getCatalogByIdentifier(_0, { identifier: { catalogSlug: route } }, context, catalogRelations);
     if (catalog) {
         return { catalog };
     }
 
-    const builderIOSettings = await getDeserializedPublicPlatformSettingsByKey(
+    const builderIOSettings = (await getDeserializedPublicPlatformSettingsByKey(
         _0,
         { key: "builder-io-settings" },
-        context,
-        info
-    ) as BuilderIOSettings;
+        context
+    )) as BuilderIOSettings;
 
+    let template = builderIOSettings.templates?.find((t) => t.key === route);
 
-    let template = builderIOSettings.templates?.find(t => t.key === route);
-
-    if(!template) {
-        template = builderIOSettings.templates?.find(t => t.key === "404");
-
+    if (!template) {
+        template = builderIOSettings.templates?.find((t) => t.key === "404");
     }
 
     const builderIOPage: BuilderIOPage = {
         apiKey: builderIOSettings.apiKey,
         template
-    }
+    };
 
     return { builderIOPage };
 };
@@ -283,9 +331,10 @@ export const resolvers: {
     AutoCompleteResult: AutoCompleteResultResolvers;
     Follow: FollowResolvers;
     ActivityLog: ActivityLogResolvers;
+    Group: GroupResolvers;
 } = {
     AutoCompleteResult: {
-        packages: async (parent: any, args: any, context: AutoCompleteContext, info: any) => {
+        packages: async (parent, args, context: AutoCompleteContext, info: GraphQLResolveInfo) => {
             const packageEntities = await context.connection.manager
                 .getCustomRepository(PackageRepository)
                 .autocomplete({
@@ -296,7 +345,7 @@ export const resolvers: {
 
             return packageEntities.map((p) => packageEntityToGraphqlObject(context, context.connection, p));
         },
-        users: async (parent: any, args: any, context: AutoCompleteContext, info: any) => {
+        users: async (parent, args, context: AutoCompleteContext, info: GraphQLResolveInfo) => {
             return await context.connection.manager.getCustomRepository(UserRepository).autocomplete({
                 user: context.me,
                 startsWith: context.query,
@@ -304,7 +353,7 @@ export const resolvers: {
             });
         },
 
-        catalogs: async (parent: any, args: any, context: AutoCompleteContext, info: any) => {
+        catalogs: async (parent, args, context: AutoCompleteContext, info: GraphQLResolveInfo) => {
             const catalogs = await context.connection.manager.getCustomRepository(CatalogRepository).autocomplete({
                 user: context.me,
                 startsWith: context.query,
@@ -313,7 +362,7 @@ export const resolvers: {
             return catalogs.map((c) => catalogEntityToGraphQL(c));
         },
 
-        collections: async (parent: any, args: any, context: AutoCompleteContext, info: any) => {
+        collections: async (parent, args, context: AutoCompleteContext, info: GraphQLResolveInfo) => {
             const collections = await context.connection.manager
                 .getCustomRepository(CollectionRepository)
                 .autocomplete({
@@ -328,10 +377,10 @@ export const resolvers: {
 
     PackageFileJSON: new GraphQLScalarType({
         name: "PackageFileJSON",
-        serialize: (value: any) => {
+        serialize: (value) => {
             return JSON.stringify(value);
         },
-        parseValue: (value: any) => {
+        parseValue: (value) => {
             const packageFileObject = parsePackageFileJSON(value);
 
             return packageFileObject;
@@ -339,138 +388,150 @@ export const resolvers: {
     }),
     Password: new GraphQLScalarType({
         name: "Password",
-        serialize: (value: any) => value,
-        parseValue: (value: any) => {
+        serialize: (value) => value,
+        parseValue: (value) => {
             validatePassword(value);
             return value;
         }
     }),
     CatalogSlug: new GraphQLScalarType({
         name: "CatalogSlug",
-        serialize: (value: any) => value,
-        parseValue: (value: any) => {
+        serialize: (value) => value,
+        parseValue: (value) => {
             validateCatalogSlug(value);
             return value;
         }
     }),
     PackageSlug: new GraphQLScalarType({
         name: "PackageSlug",
-        serialize: (value: any) => value,
-        parseValue: (value: any) => {
+        serialize: (value) => value,
+        parseValue: (value) => {
             validatePackageSlug(value);
             return value;
         }
     }),
     CollectionSlug: new GraphQLScalarType({
         name: "CollectionSlug",
-        serialize: (value: any) => value,
-        parseValue: (value: any) => {
+        serialize: (value) => value,
+        parseValue: (value) => {
             validateCollectionSlug(value);
             return value;
         }
     }),
     Username: new GraphQLScalarType({
         name: "Username",
-        serialize: (value: any) => value,
-        parseValue: (value: any) => {
+        serialize: (value) => value,
+        parseValue: (value) => {
             validateUsername(value);
             return value;
         }
     }),
     EmailAddress: new GraphQLScalarType({
         name: "EmailAddress",
-        serialize: (value: any) => value,
-        parseValue: (value: any) => {
+        serialize: (value) => value,
+        parseValue: (value) => {
             validateEmailAddress(value);
             return value;
         }
     }),
     UsernameOrEmailAddress: new GraphQLScalarType({
         name: "UsernameOrEmailAddress",
-        serialize: (value: any) => value,
-        parseValue: (value: any) => {
+        serialize: (value) => value,
+        parseValue: (value) => {
             validateUsernameOrEmail(value);
             return value;
         }
     }),
     Date: new GraphQLScalarType({
         name: "Date",
-        serialize: (value: any) => value,
-        parseValue: (value: any) => new Date(value)
+        serialize: (value) => value,
+        parseValue: (value) => new Date(value)
     }),
     User: {
-        username: async (parent: User, _1: any, context: Context) => {
-            if (!parent.username) {
-                return parent.emailAddress as string;
-            }
-
+        username: async (parent: User, _1: unknown, context: Context) => {
             return parent.username;
         },
-        firstName: async (parent: User, _1: any, context: Context) => {
-            const user = await getUserFromCacheOrDbByUsername(context, parent.username);
+        displayName: async (parent: User, _1: unknown, context: Context) => {
+            const user = await getUserFromCacheOrDbByUsernameOrFail(context, parent.username);
+
+            if (user.status === UserStatus.PENDING_SIGN_UP) {
+                if (isAuthenticatedAsAdmin(context)) {
+                    return user.emailAddress + " (pending sign up)";
+                }
+
+                const emailParts = user.emailAddress.split("@");
+                return emailParts[0] + " (pending sign up)";
+            }
+
+            const returnValue = user.displayName || user.username;
+
+            return returnValue;
+        },
+        firstName: async (parent: User, _1: unknown, context: Context) => {
+            const user = await getUserFromCacheOrDbByUsernameOrFail(context, parent.username);
             if (isRequestingUserOrAdmin(context, user.username) || user.nameIsPublic) {
                 return user.firstName || null;
             }
 
             return null;
         },
-        lastName: async (parent: User, _1: any, context: Context) => {
-            const user = await getUserFromCacheOrDbByUsername(context, parent.username);
+        lastName: async (parent: User, _1: unknown, context: Context) => {
+            const user = await getUserFromCacheOrDbByUsernameOrFail(context, parent.username);
             if (isRequestingUserOrAdmin(context, user.username) || user.nameIsPublic) {
                 return user.lastName || null;
             }
 
             return null;
         },
-        emailAddress: async (parent: User, _1: any, context: Context) => {
-            const user = await getUserFromCacheOrDbByUsername(context, parent.username);
+        emailAddress: async (parent: User, _1: unknown, context: Context) => {
+            const user = await getUserFromCacheOrDbByUsernameOrFail(context, parent.username);
             if (isRequestingUserOrAdmin(context, user.username) || user.emailAddressIsPublic) {
                 return user.emailAddress;
             }
 
             return null;
         },
-        twitterHandle: async (parent: User, _1: any, context: Context) => {
-            const user = await getUserFromCacheOrDbByUsername(context, parent.username);
+        twitterHandle: async (parent: User, _1: unknown, context: Context) => {
+            const user = await getUserFromCacheOrDbByUsernameOrFail(context, parent.username);
             if (isRequestingUserOrAdmin(context, user.username) || user.twitterHandleIsPublic) {
                 return user.twitterHandle || null;
             }
 
             return null;
         },
-        gitHubHandle: async (parent: User, _1: any, context: Context) => {
-            const user = await getUserFromCacheOrDbByUsername(context, parent.username);
+        gitHubHandle: async (parent: User, _1: unknown, context: Context) => {
+            const user = await getUserFromCacheOrDbByUsernameOrFail(context, parent.username);
             if (isRequestingUserOrAdmin(context, user.username) || user.gitHubHandleIsPublic) {
                 return user.gitHubHandle || null;
             }
 
             return null;
         },
-        website: async (parent: User, _1: any, context: Context) => {
-            const user = await getUserFromCacheOrDbByUsername(context, parent.username);
+        website: async (parent: User, _1: unknown, context: Context) => {
+            const user = await getUserFromCacheOrDbByUsernameOrFail(context, parent.username);
             if (isRequestingUserOrAdmin(context, user.username) || user.websiteIsPublic) {
                 return user.website || null;
             }
 
             return null;
         },
-        location: async (parent: User, _1: any, context: Context) => {
-            const user = await getUserFromCacheOrDbByUsername(context, parent.username);
+        location: async (parent: User, _1: unknown, context: Context) => {
+            const user = await getUserFromCacheOrDbByUsernameOrFail(context, parent.username);
             if (isRequestingUserOrAdmin(context, user.username) || user.locationIsPublic) {
                 return user.location || null;
             }
 
             return null;
         },
-        status: async (parent: User, _1: any, context: Context) => {
-            const user = await getUserFromCacheOrDbByUsername(context, parent.username);
+        status: async (parent: User, _1: unknown, context: Context) => {
+            const user = await getUserFromCacheOrDbByUsernameOrFail(context, parent.username);
             return user.status;
         },
-        uiDarkModeEnabled: async (parent: User, _1: any, context: Context) => {
+        uiDarkModeEnabled: async (parent: User, _1: unknown, context: Context) => {
             if (Object.hasOwnProperty.call(context, "me")) {
                 const authenticatedContext = context as AuthenticatedContext;
 
-                const user = await getUserFromCacheOrDbByUsername(authenticatedContext, parent.username);
+                const user = await getUserFromCacheOrDbByUsernameOrFail(authenticatedContext, parent.username);
                 if (isRequestingUserOrAdmin(authenticatedContext, user.username)) {
                     return user.uiDarkModeEnabled;
                 }
@@ -516,7 +577,7 @@ export const resolvers: {
         updatedAt: packageUpdatedAt,
         viewedCount: packageViewedCount,
         isPublic: packageIsPublic,
-        updateMethods: packageUpdateMethods,
+        updateMethods: packageUpdateMethods
     },
     PackageIssue: {
         author: getPackageIssueAuthor,
@@ -545,22 +606,34 @@ export const resolvers: {
         targetPackage: logPackage,
         targetPackageIssue: logPackageIssue,
         targetCatalog: logCatalog,
-        targetCollection: logCollection
+        targetCollection: logCollection,
+        targetUser: logUser,
+        targetGroup: logGroup
+    },
+    Group: {
+        myPermissions: myGroupPermissions,
+        packagePermissions: packagePermissionsByGroupForUser,
+        users: groupUsers,
+        catalogPermissions: catalogPermissionsByGroupForUser,
+        collectionPermissions: collectionPermissionsByGroupForUser
     },
 
     Query: {
-        registryStatus: (_0: any, _1: any, context: AuthenticatedContext, info: any) => {
+        registryStatus: (_0: unknown, _1: unknown, context: AuthenticatedContext, info: GraphQLResolveInfo) => {
             return {
                 status: RegistryStatus.SERVING_REQUESTS,
                 version: DATAPM_VERSION,
-                registryUrl: process.env["REGISTRY_URL"] as string
-            }
+                registryUrl: getEnvVariable("REGISTRY_URL") as string
+            };
         },
-        me: async (_0: any, _1: any, context: AuthenticatedContext, info: any) => {
-            return await getUserFromCacheOrDbByUsername(context, context.me.username, getGraphQlRelationName(info));
-        },
-        user: async (_0: any, args: { username: string }, context: AuthenticatedContext, info: any) => {
-            return await getUserFromCacheOrDbByUsername(context, args.username, getGraphQlRelationName(info));
+        me: me,
+        user: async (
+            _0: unknown,
+            args: { username: string },
+            context: AuthenticatedContext,
+            info: GraphQLResolveInfo
+        ) => {
+            return await getUserFromCacheOrDbByUsernameOrFail(context, args.username, getGraphQlRelationName(info));
         },
 
         catalog: getCatalogByIdentifierOrFail,
@@ -591,7 +664,7 @@ export const resolvers: {
         userCollections: userCollections,
         collectionSlugAvailable: collectionSlugAvailable,
         userPackages: userPackages,
-        autoComplete: async (_0: any, { startsWith }, context: AutoCompleteContext, info: any) => {
+        autoComplete: async (_0: unknown, { startsWith }, context: AutoCompleteContext, info: GraphQLResolveInfo) => {
             context.query = startsWith;
             return {
                 catalogs: [],
@@ -606,10 +679,10 @@ export const resolvers: {
         catalogPackages: catalogPackages,
 
         usersByCatalog: async (
-            _0: any,
+            _0: unknown,
             { identifier }: { identifier: CatalogIdentifierInput },
             context: AuthenticatedContext,
-            info: any
+            info: GraphQLResolveInfo
         ) => {
             const relations = getGraphQlRelationName(info);
 
@@ -627,6 +700,7 @@ export const resolvers: {
         emailAddressAvailable: emailAddressAvailable,
         searchUsers: searchUsers,
         adminSearchUsers: adminSearchUsers,
+        adminSearchGroups,
         myActivity: myActivity,
         packageActivities: packageActivities,
         getFollow: getFollow,
@@ -644,7 +718,16 @@ export const resolvers: {
         packageIssueFollowersCount: packageIssueFollowersCount,
         catalogFollowersCount: catalogFollowersCount,
         collectionFollowersCount: collectionFollowersCount,
-        userFollowersCount: userFollowersCount
+        userFollowersCount: userFollowersCount,
+        listRepositories,
+        groupsByPackage,
+        groupsByCatalog,
+        groupsByCollection,
+        myGroups: myGroups,
+        group: group,
+
+        // Connectors
+        listConnectors
     },
 
     Mutation: {
@@ -678,6 +761,8 @@ export const resolvers: {
         deleteCatalog: deleteCatalog,
         setCatalogAvatarImage: setCatalogAvatarImage,
         deleteCatalogAvatarImage: deleteCatalogAvatarImage,
+        addOrUpdateGroupToCatalog: addOrUpdateGroupToCatalog,
+        removeGroupFromCatalog: removeGroupFromCatalog,
 
         // Catalog Permissions
         setUserCatalogPermission: setUserCatalogPermission,
@@ -690,6 +775,21 @@ export const resolvers: {
         setPackageCoverImage: setPackageCoverImage,
         deletePackage: deletePackage,
         packageFetched: packageFetched,
+        createRepository,
+        deleteRepository,
+        createCredential,
+        deleteCredential,
+
+        // Groups
+        createGroup,
+        updateGroup,
+        deleteGroup,
+        addOrUpdateUserToGroup,
+        removeUserFromGroup,
+        addOrUpdateGroupToPackage,
+        removeGroupFromPackage,
+        setGroupAsAdmin,
+        adminDeleteGroup,
 
         // Package issues
         createPackageIssue: createPackageIssue,
@@ -713,12 +813,14 @@ export const resolvers: {
         deleteCollection: deleteCollection,
         addPackageToCollection: addPackageToCollection,
         removePackageFromCollection: removePackageFromCollection,
+        addOrUpdateGroupToCollection: addOrUpdateGroupToCollection,
+        removeGroupFromCollection: removeGroupFromCollection,
 
         // Collection Permissions
         setUserCollectionPermissions: setUserCollectionPermissions,
         deleteUserCollectionPermissions: deleteUserCollectionPermissions,
 
-        // Version 
+        // Version
         createVersion: createVersion,
         deleteVersion: deleteVersion,
 
@@ -729,7 +831,6 @@ export const resolvers: {
 
         savePlatformSettings: savePlatformSettings,
 
-        runJob,
-
+        runJob
     }
 };
